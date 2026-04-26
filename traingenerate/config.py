@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def default_dataset_name(cfl: float = 0.5, setting: str = "setting1") -> str:
+def default_dataset_name(cfl: float = 0.5, setting: str = "1") -> str:
     return f"train_{format(float(cfl), 'g')}_{setting}.h5"
 
 
@@ -42,7 +42,7 @@ class DataConfig:
 @dataclass(frozen=True)
 class GenerationConfig:
     num_workers: int = 14
-    generation_batch_size: int = 1024
+    generation_batch_size: int = 2048
     output_dir: Path = field(default_factory=default_output_dir)
     dataset_name: str = ""
     stored_sample_fields: tuple[str, ...] = ()

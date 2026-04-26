@@ -148,6 +148,18 @@ def compute_curvature_loss(
     return criterion(pred_kappa, target_kappa)
 
 
+def _move_batch_to_device(
+    batch: dict[str, torch.Tensor],
+    *,
+    device: torch.device,
+    non_blocking: bool,
+) -> dict[str, torch.Tensor]:
+    moved: dict[str, torch.Tensor] = {}
+    for key, value in batch.items():
+        moved[key] = value if value.device == device else value.to(device, non_blocking=non_blocking)
+    return moved
+
+
 def compute_losses(
     model: nn.Module,
     *,
@@ -160,11 +172,9 @@ def compute_losses(
     weights: dict[str, float],
 ) -> dict[str, torch.Tensor]:
     non_blocking = device.type == "cuda"
-    traj_batch = {key: value.to(device, non_blocking=non_blocking) for key, value in traj_batch.items()}
-    pde_batch = {key: value.to(device, non_blocking=non_blocking) for key, value in pde_batch.items()}
-    interface_batch = {
-        key: value.to(device, non_blocking=non_blocking) for key, value in interface_batch.items()
-    }
+    traj_batch = _move_batch_to_device(traj_batch, device=device, non_blocking=non_blocking)
+    pde_batch = _move_batch_to_device(pde_batch, device=device, non_blocking=non_blocking)
+    interface_batch = _move_batch_to_device(interface_batch, device=device, non_blocking=non_blocking)
 
     phi0_traj = compute_phi0_from_circle(
         traj_batch["x"],

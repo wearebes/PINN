@@ -39,10 +39,87 @@ def cycle_loader(loader):
                 yield loader_batch_to_dict(loader, batch)
 
 
+LOSS_KEYS = ("traj", "pde", "interface", "curvature", "total")
+
+
+def _bundle_traj_splits(bundle: dict[str, Any]) -> dict[str, dict[str, torch.Tensor]]:
+    traj_splits = bundle.get("traj_splits")
+    if traj_splits is not None:
+        return traj_splits
+
+    loaders = bundle.get("loaders")
+    if loaders is None:
+        raise KeyError("Bundle does not contain trajectory splits or trajectory loaders.")
+
+    traj_splits = {}
+    for split_name in ("train_traj", "val_traj", "test_traj"):
+        loader = loaders[split_name]
+        field_names = tuple(getattr(loader, "_field_names"))
+        traj_splits[split_name] = {
+            name: tensor
+            for name, tensor in zip(field_names, loader.dataset.tensors, strict=True)
+        }
+    bundle["traj_splits"] = traj_splits
+    return traj_splits
+
+
+def _preload_traj_splits(bundle: dict[str, Any], device: torch.device) -> dict[str, dict[str, torch.Tensor]]:
+    non_blocking = device.type == "cuda"
+    preloaded: dict[str, dict[str, torch.Tensor]] = {}
+    for split_name, split in _bundle_traj_splits(bundle).items():
+        preloaded[split_name] = {
+            key: value if value.device == device else value.to(device, non_blocking=non_blocking)
+            for key, value in split.items()
+        }
+    bundle["traj_splits"] = preloaded
+    return preloaded
+
+
+def _traj_split_nbytes(split: dict[str, torch.Tensor]) -> int:
+    return int(sum(tensor.numel() * tensor.element_size() for tensor in split.values()))
+
+
+def _traj_split_size(split: dict[str, torch.Tensor]) -> int:
+    first_tensor = next(iter(split.values()), None)
+    return int(first_tensor.shape[0]) if first_tensor is not None else 0
+
+
+def _traj_batch_count(split: dict[str, torch.Tensor], batch_size: int) -> int:
+    size = _traj_split_size(split)
+    return max(1, int(np.ceil(size / batch_size))) if size > 0 else 1
+
+
+def cycle_traj_split(
+    split: dict[str, torch.Tensor],
+    *,
+    batch_size: int,
+    shuffle: bool,
+):
+    size = _traj_split_size(split)
+    if size < 1:
+        raise ValueError("Trajectory split is empty.")
+
+    index_device = next(iter(split.values())).device
+    while True:
+        if shuffle:
+            order = torch.randperm(size, device=index_device)
+        else:
+            order = torch.arange(size, device=index_device)
+        for start in range(0, size, batch_size):
+            indices = order[start:start + batch_size]
+            yield {key: value.index_select(0, indices) for key, value in split.items()}
+
+
+def _loss_sums_to_means(sums: torch.Tensor, num_steps: int) -> dict[str, float]:
+    means = (sums / float(num_steps)).detach().cpu().tolist()
+    return {key: float(value) for key, value in zip(LOSS_KEYS, means, strict=True)}
+
+
 def evaluate_epoch(
     model: nn.Module,
     *,
-    traj_loader,
+    traj_split: dict[str, torch.Tensor],
+    batch_size: int,
     pde_loader,
     interface_loader,
     device: torch.device,
@@ -51,11 +128,11 @@ def evaluate_epoch(
     weights: dict[str, float],
 ) -> dict[str, float]:
     model.eval()
-    traj_iter = cycle_loader(traj_loader)
+    traj_iter = cycle_traj_split(traj_split, batch_size=batch_size, shuffle=False)
     pde_iter = cycle_loader(pde_loader)
     interface_iter = cycle_loader(interface_loader)
-    num_steps = max(len(traj_loader), len(pde_loader), len(interface_loader))
-    sums = {key: 0.0 for key in ("traj", "pde", "interface", "curvature", "total")}
+    num_steps = max(_traj_batch_count(traj_split, batch_size), len(pde_loader), len(interface_loader))
+    sums = torch.zeros(len(LOSS_KEYS), dtype=torch.float64, device=device)
 
     for _ in range(num_steps):
         with torch.enable_grad():
@@ -69,10 +146,9 @@ def evaluate_epoch(
                 eps_sign_factor=eps_sign_factor,
                 weights=weights,
             )
-        for key in sums:
-            sums[key] += float(losses[key].detach().cpu().item())
+        sums += torch.stack([losses[key].detach().to(dtype=torch.float64) for key in LOSS_KEYS])
 
-    return {key: value / num_steps for key, value in sums.items()}
+    return _loss_sums_to_means(sums, num_steps)
 
 
 def save_checkpoint(model: nn.Module, path: str | Path) -> Path:
@@ -273,14 +349,13 @@ def train_model(
     model = model.to(device)
     optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=train_config.lr)
 
-    loaders = bundle["loaders"]
+    traj_splits = _preload_traj_splits(bundle, device)
+    preload_summary = ", ".join(
+        f"{split_name}={_traj_split_size(split)} samples/{_traj_split_nbytes(split) / (1024 ** 2):.2f} MiB"
+        for split_name, split in traj_splits.items()
+    )
+    print(f"Trajectory splits preloaded on {device}: {preload_summary}")
     reinit_cfg = bundle["reinit_config"]
-    selection_weights = {
-        "traj": train_config.lambda_traj,
-        "pde": train_config.lambda_pde,
-        "interface": train_config.lambda_interface,
-        "curvature": train_config.lambda_curvature if train_config.use_curvature_loss else 0.0,
-    }
     history: dict[str, Any] = {
         "train_traj": [],
         "train_pde": [],
@@ -305,7 +380,11 @@ def train_model(
     best_val_total = float("inf")
     best_state = None
     wait = 0
-    train_traj_iter = cycle_loader(loaders["train_traj"])
+    train_traj_iter = cycle_traj_split(
+        traj_splits["train_traj"],
+        batch_size=train_config.batch_size,
+        shuffle=True,
+    )
 
     for epoch in range(train_config.max_epochs):
         model.train()
@@ -328,8 +407,12 @@ def train_model(
         )
         train_pde_iter = cycle_loader(train_pde_loader)
         train_interface_iter = cycle_loader(train_interface_loader)
-        train_steps = max(len(loaders["train_traj"]), len(train_pde_loader), len(train_interface_loader))
-        train_sums = {key: 0.0 for key in ("traj", "pde", "interface", "curvature", "total")}
+        train_steps = max(
+            _traj_batch_count(traj_splits["train_traj"], train_config.batch_size),
+            len(train_pde_loader),
+            len(train_interface_loader),
+        )
+        train_sums = torch.zeros(len(LOSS_KEYS), dtype=torch.float64, device=device)
 
         for _ in range(train_steps):
             optimizer.zero_grad()
@@ -345,10 +428,9 @@ def train_model(
             )
             losses["total"].backward()
             optimizer.step()
-            for key in train_sums:
-                train_sums[key] += float(losses[key].detach().cpu().item())
+            train_sums += torch.stack([losses[key].detach().to(dtype=torch.float64) for key in LOSS_KEYS])
 
-        train_means = {key: value / train_steps for key, value in train_sums.items()}
+        train_means = _loss_sums_to_means(train_sums, train_steps)
         val_pde_loader = sample_pde_loader(
             bundle,
             "val",
@@ -367,7 +449,8 @@ def train_model(
         )
         val_means = evaluate_epoch(
             model,
-            traj_loader=loaders["val_traj"],
+            traj_split=traj_splits["val_traj"],
+            batch_size=train_config.batch_size,
             pde_loader=val_pde_loader,
             interface_loader=val_interface_loader,
             device=device,

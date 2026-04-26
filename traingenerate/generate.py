@@ -86,12 +86,6 @@ def _normalize_generation_config(
     )
 
 
-def _default_training_batch_size() -> int:
-    from model.config import TrainConfig
-
-    return int(TrainConfig().batch_size)
-
-
 def _resolve_output_path(
     *,
     generation_config: GenerationConfig,
@@ -1394,8 +1388,6 @@ def load_training_bundle_from_hdf5(path: str | Path, *, batch_size: int | None =
     if batch_size is not None and int(batch_size) < 1:
         raise ValueError("batch_size override must be >= 1.")
 
-    from torch.utils.data import DataLoader, TensorDataset
-
     with h5py.File(h5_path, "r") as handle:
         dataset_format_version = int(handle.attrs.get("dataset_format_version", 1))
         if dataset_format_version != DATASET_FORMAT_VERSION:
@@ -1419,7 +1411,6 @@ def load_training_bundle_from_hdf5(path: str | Path, *, batch_size: int | None =
         if isinstance(raw_stored_sample_fields, bytes):
             raw_stored_sample_fields = raw_stored_sample_fields.decode("utf-8")
         stored_sample_fields = tuple(json.loads(str(raw_stored_sample_fields)))
-        effective_batch_size = int(batch_size) if batch_size is not None else _default_training_batch_size()
         num_workers = int(handle.attrs.get("num_workers", default_generation_config.num_workers))
         output_dir = Path(str(handle.attrs.get("output_dir", h5_path.parent)))
         dataset_name = str(handle.attrs.get("dataset_name", h5_path.name))
@@ -1457,7 +1448,7 @@ def load_training_bundle_from_hdf5(path: str | Path, *, batch_size: int | None =
             if "split_blueprint_indices" in handle and name in handle["split_blueprint_indices"]
         }
 
-    def _create_loader(group_name: str, shuffle: bool) -> DataLoader:
+    def _read_traj_split(group_name: str) -> dict[str, torch.Tensor]:
         with h5py.File(h5_path, "r") as handle:
             group = handle[group_name]
             keys = list(group.keys())
@@ -1475,27 +1466,12 @@ def load_training_bundle_from_hdf5(path: str | Path, *, batch_size: int | None =
         missing = [key for key in field_order if key not in arrays]
         if missing:
             raise ValueError(f"Dataset group {group_name!r} is missing required v2 columns: {missing}.")
-        tensors = [torch.from_numpy(arrays[key]) for key in keys]
-        
-        field_names = tuple(keys)
-        dataset = TensorDataset(*tensors)
-        pin_memory = torch.cuda.is_available()
-        loader = DataLoader(
-            dataset,
-            batch_size=effective_batch_size,
-            shuffle=shuffle,
-            drop_last=False,
-            num_workers=TRAIN_LOADER_WORKERS,
-            pin_memory=pin_memory,
-            persistent_workers=TRAIN_LOADER_WORKERS > 0,
-        )
-        loader._field_names = field_names  # type: ignore[attr-defined]
-        return loader
+        return {key: torch.from_numpy(arrays[key]) for key in keys}
 
-    loaders = {
-        "train_traj": _create_loader("train_traj", shuffle=True),
-        "val_traj": _create_loader("val_traj", shuffle=False),
-        "test_traj": _create_loader("test_traj", shuffle=False),
+    traj_splits = {
+        "train_traj": _read_traj_split("train_traj"),
+        "val_traj": _read_traj_split("val_traj"),
+        "test_traj": _read_traj_split("test_traj"),
     }
 
     data_config = DataConfig(
@@ -1564,15 +1540,16 @@ def load_training_bundle_from_hdf5(path: str | Path, *, batch_size: int | None =
         "generation_config": generation_config,
         "split_blueprint_indices": split_blueprint_indices,
         "split_blueprint_counts": split_blueprint_counts,
-        "loaders": loaders,
+        "traj_splits": traj_splits,
         "sizes": {},
         "blueprints": blueprints,
         "sdf_validation_fields": sdf_validation_fields,
     }
     
     # Compute sizes
-    for split_name, loader in bundle["loaders"].items():
-        bundle["sizes"][split_name] = loader.dataset.tensors[0].shape[0]
+    for split_name, split in bundle["traj_splits"].items():
+        first_tensor = next(iter(split.values()), None)
+        bundle["sizes"][split_name] = int(first_tensor.shape[0]) if first_tensor is not None else 0
     
     return bundle
 
