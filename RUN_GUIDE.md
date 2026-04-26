@@ -1,5 +1,26 @@
 # Run Guide
 
+## 0. One-Command Pipeline
+
+You can run the full workflow with:
+
+```bash
+bash job.sh
+```
+
+This script runs, in order:
+
+- training dataset generation
+- test dataset generation
+- model training
+- curvature evaluation
+
+Common overrides:
+
+```bash
+DEVICE=cuda USE_SWANLAB=1 TRAIN_EXPERIMENT_NAME=my-train EVAL_EXPERIMENT_NAME=my-eval bash job.sh
+```
+
 ## 1. Data Generation
 
 Use the following command to generate the training dataset:
@@ -61,13 +82,12 @@ Example:
 ```bash
 python -m model.train \
   --dataset-output dataset/train_0.5_setting1.h5 \
-  --batch-size 8192 \
   --use-swanlab \
   --swanlab-project PINN \
-  --swanlab-experiment-name nonsdf-stage2predict \
-  --swanlab-tags nonsdf,stage2
+  --swanlab-experiment-name version1_Curvature \
+  --swanlab-tags Curvature,stage2
 ```
-
+ --batch-size 81920 \
 Training batch size is controlled only by `TrainConfig.batch_size` in `model/config.py` or by `model.train --batch-size`. It is no longer inherited from the dataset generation config or stored HDF5 generation batch size.
 
 ## 3. Curvature Evaluation With SwanLab

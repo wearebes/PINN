@@ -1,0 +1,19 @@
+# Minimal dependencies for this project.
+# Intentionally unpinned to avoid resolver conflicts from strict CUDA package pins.
+#
+# Recommended install order:
+# 1. Install PyTorch separately for your machine/CUDA setup.
+# 2. Install the rest from this file.
+#
+# Example:
+#   pip install torch torchvision torchaudio
+#   pip install -r requirements-min.txt
+
+numpy
+h5py
+matplotlib
+tqdm
+scipy
+
+# Optional: enable SwanLab logging in training/evaluation.
+# swanlab

@@ -55,7 +55,7 @@ def evaluate_epoch(
     pde_iter = cycle_loader(pde_loader)
     interface_iter = cycle_loader(interface_loader)
     num_steps = max(len(traj_loader), len(pde_loader), len(interface_loader))
-    sums = {key: 0.0 for key in ("traj", "pde", "interface", "total")}
+    sums = {key: 0.0 for key in ("traj", "pde", "interface", "curvature", "total")}
 
     for _ in range(num_steps):
         with torch.enable_grad():
@@ -244,6 +244,7 @@ def get_epoch_weights(train_config: TrainConfig, epoch: int) -> dict[str, float]
         "traj": train_config.lambda_traj,
         "pde": train_config.lambda_pde,
         "interface": train_config.lambda_interface,
+        "curvature": train_config.lambda_curvature if train_config.use_curvature_loss else 0.0,
     }
 
 
@@ -278,20 +279,24 @@ def train_model(
         "traj": train_config.lambda_traj,
         "pde": train_config.lambda_pde,
         "interface": train_config.lambda_interface,
+        "curvature": train_config.lambda_curvature if train_config.use_curvature_loss else 0.0,
     }
     history: dict[str, Any] = {
         "train_traj": [],
         "train_pde": [],
         "train_interface": [],
+        "train_curvature": [],
         "train_total": [],
         "val_traj": [],
         "val_pde": [],
         "val_interface": [],
+        "val_curvature": [],
         "val_total": [],
         "val_total_monitor": [],
         "weight_traj": [],
         "weight_pde": [],
         "weight_interface": [],
+        "weight_curvature": [],
         "best_epoch": -1,
         "best_checkpoint_path": str(checkpoint_path),
         "output_model_path": str(output_model_path),
@@ -324,7 +329,7 @@ def train_model(
         train_pde_iter = cycle_loader(train_pde_loader)
         train_interface_iter = cycle_loader(train_interface_loader)
         train_steps = max(len(loaders["train_traj"]), len(train_pde_loader), len(train_interface_loader))
-        train_sums = {key: 0.0 for key in ("traj", "pde", "interface", "total")}
+        train_sums = {key: 0.0 for key in ("traj", "pde", "interface", "curvature", "total")}
 
         for _ in range(train_steps):
             optimizer.zero_grad()
@@ -372,26 +377,30 @@ def train_model(
         )
         val_monitor_means = val_means
 
-        for key in ("traj", "pde", "interface", "total"):
+        for key in ("traj", "pde", "interface", "curvature", "total"):
             history[f"train_{key}"].append(train_means[key])  # type: ignore[index]
             history[f"val_{key}"].append(val_means[key])  # type: ignore[index]
         history["val_total_monitor"].append(val_monitor_means["total"])
         history["weight_traj"].append(weights["traj"])
         history["weight_pde"].append(weights["pde"])
         history["weight_interface"].append(weights["interface"])
+        history["weight_curvature"].append(weights["curvature"])
 
         print(
             f"Epoch {epoch:03d} | "
-            f"Weights(Traj/PDE/Interface): {weights['traj']:.3f}/{weights['pde']:.3f}/{weights['interface']:.3f} | "
+            f"Weights(Traj/PDE/Interface/Curv): "
+            f"{weights['traj']:.3f}/{weights['pde']:.3f}/{weights['interface']:.3f}/{weights['curvature']:.3f} | "
             f"Train Traj: {train_means['traj']:.6e} | "
             f"Train PDE: {train_means['pde']:.6e} | "
             f"Train Interface: {train_means['interface']:.6e} | "
+            f"Train Curv: {train_means['curvature']:.6e} | "
             f"Train Total: {train_means['total']:.6e}"
         )
         print(
             f"           Val Traj: {val_means['traj']:.6e} | "
             f"Val PDE: {val_means['pde']:.6e} | "
             f"Val Interface: {val_means['interface']:.6e} | "
+            f"Val Curv: {val_means['curvature']:.6e} | "
             f"Val Total: {val_means['total']:.6e} | "
             f"Monitor Total: {val_monitor_means['total']:.6e}"
         )
@@ -401,15 +410,18 @@ def train_model(
                     "train/traj_loss": train_means["traj"],
                     "train/pde_loss": train_means["pde"],
                     "train/interface_loss": train_means["interface"],
+                    "train/curvature_loss": train_means["curvature"],
                     "train/total_loss": train_means["total"],
                     "val/traj_loss": val_means["traj"],
                     "val/pde_loss": val_means["pde"],
                     "val/interface_loss": val_means["interface"],
+                    "val/curvature_loss": val_means["curvature"],
                     "val/total_loss": val_means["total"],
                     "val/monitor_total_loss": val_monitor_means["total"],
                     "weights/traj": weights["traj"],
                     "weights/pde": weights["pde"],
                     "weights/interface": weights["interface"],
+                    "weights/curvature": weights["curvature"],
                     "monitor/best_val_total": min(best_val_total, val_monitor_means["total"]),
                 },
                 step=epoch + 1,
@@ -637,6 +649,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-traj", type=float, default=train_cfg.lambda_traj)
     parser.add_argument("--lambda-pde", type=float, default=train_cfg.lambda_pde)
     parser.add_argument("--lambda-interface", type=float, default=train_cfg.lambda_interface)
+    parser.add_argument("--use-curvature-loss", action="store_true", default=train_cfg.use_curvature_loss)
+    parser.add_argument("--lambda-curvature", type=float, default=train_cfg.lambda_curvature)
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -675,6 +689,8 @@ def main() -> None:
         lambda_traj=args.lambda_traj,
         lambda_pde=args.lambda_pde,
         lambda_interface=args.lambda_interface,
+        use_curvature_loss=bool(args.use_curvature_loss),
+        lambda_curvature=args.lambda_curvature,
         batch_size=args.batch_size,
         seed=args.seed,
         dataset_path=Path(args.dataset_output),
@@ -697,8 +713,10 @@ def main() -> None:
     print(f"Activation: {train_config.activation}")
     print(
         f"Loss weights: traj={train_config.lambda_traj}, "
-        f"pde={train_config.lambda_pde}, interface={train_config.lambda_interface}"
+        f"pde={train_config.lambda_pde}, interface={train_config.lambda_interface}, "
+        f"curvature={train_config.lambda_curvature if train_config.use_curvature_loss else 0.0}"
     )
+    print(f"Use curvature loss: {train_config.use_curvature_loss}")
     print(f"Training batch size: {train_config.batch_size}")
     if bundle.get("generation_config") is not None:
         print(f"Generation batch size: {bundle['generation_config'].generation_batch_size}")

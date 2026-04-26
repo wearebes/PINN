@@ -131,6 +131,23 @@ def compute_interface_loss(
     return criterion(phi, torch.zeros_like(phi))
 
 
+def compute_curvature_loss(
+    model: nn.Module,
+    batch: dict[str, torch.Tensor],
+    *,
+    criterion: nn.Module,
+) -> torch.Tensor:
+    x = batch["x"].requires_grad_(True)
+    y = batch["y"].requires_grad_(True)
+    s = batch["s"].requires_grad_(True)
+    cx = batch["cx"]
+    cy = batch["cy"]
+    radius = batch["radius"]
+    target_kappa = 1.0 / radius.clamp_min(EPS)
+    pred_kappa = compute_model_curvature(model, x, y, cx, cy, radius, s)
+    return criterion(pred_kappa, target_kappa)
+
+
 def compute_losses(
     model: nn.Module,
     *,
@@ -166,15 +183,21 @@ def compute_losses(
         eps_sign_factor=eps_sign_factor,
     )
     loss_interface = compute_interface_loss(model, interface_batch, criterion=criterion)
+    if float(weights.get("curvature", 0.0)) > 0.0:
+        loss_curvature = compute_curvature_loss(model, interface_batch, criterion=criterion)
+    else:
+        loss_curvature = torch.zeros((), dtype=loss_interface.dtype, device=loss_interface.device)
 
     loss_total = (
         weights["traj"] * loss_traj
         + weights["pde"] * loss_pde
         + weights["interface"] * loss_interface
+        + weights.get("curvature", 0.0) * loss_curvature
     )
     return {
         "traj": loss_traj,
         "pde": loss_pde,
         "interface": loss_interface,
+        "curvature": loss_curvature,
         "total": loss_total,
     }
