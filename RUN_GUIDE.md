@@ -82,22 +82,26 @@ Example:
 ```bash
 python -m model.train \
   --dataset-output dataset/train_0.5_setting1.h5 \
+  --batch-size 81920 \
   --use-swanlab \
   --swanlab-project PINN \
   --swanlab-experiment-name version1_Curvature \
   --swanlab-tags Curvature,stage2
 ```
- --batch-size 81920 \
+
 Training batch size is controlled only by `TrainConfig.batch_size` in `model/config.py` or by `model.train --batch-size`. It is no longer inherited from the dataset generation config or stored HDF5 generation batch size.
 
 ## 3. Curvature Evaluation With SwanLab
 
 ```bash
-python -m evaluate --use-swanlab
+python -m evaluate --geometry flower --use-swanlab
 ```
+
+For the independent flower test set:
 
 ```bash
 python -m evaluate \
+  --geometry flower \
   --test-data test_data/test_FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN.h5 \
   --model out/best_reinit_pinn.pt \
   --device cuda \
@@ -106,5 +110,85 @@ python -m evaluate \
   --swanlab-project PINN \
   --swanlab-experiment-name curvature-eval \
   --swanlab-tags curvature,eval,hkappa \
+  --swanlab-logdir swanlog
+```
+
+For the circle test split stored inside the training dataset:
+
+```bash
+python -m evaluate \
+  --geometry circle \
+  --circle-dataset dataset/train_0.5_setting1.h5 \
+  --model out/curvature-v1_layer4.pt \
+  --device cuda \
+  --batch-size 4096 \
+  --use-swanlab
+```
+
+For fixed-reference circle evaluation, there are two recommended sampling modes:
+
+- `true_interface`: use the zero-level-set nodes of the true circle interface as a fixed reference. The sampled nodes do not move across iterations; only the numerical/model `phi`, derivatives, and `h*kappa` values change with `s=n*CFL`.
+- `reference_band`: use a fixed narrow band around the true interface. The recommended setting is `|\phi_true| <= 3h`, which corresponds to `--circle-band-width-cells 3.0`.
+
+Recommended SwanLab experiment names:
+
+- `curvature-eval-trueinterface-curvature`
+- `curvature-eval-trueinterface-noncurvature`
+- `curvature-eval-referenceband-3h-curvature`
+- `curvature-eval-referenceband-3h-noncurvature`
+
+If you run inside WSL with your `conda` environment `jq`, use the same CLI after activating that environment:
+
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate jq
+
+python -m evaluate \
+  --geometry flower \
+  --test-data test_data/test_FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN.h5 \
+  --model out/best_reinit_pinn.pt \
+  --device cuda \
+  --batch-size 4096 \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name curvature-eval \
+  --swanlab-tags curvature,eval,hkappa \
+  --swanlab-logdir swanlog
+```
+
+For the fixed `true_interface` evaluation:
+
+```bash
+python -m evaluate \
+  --geometry circle \
+  --circle-dataset dataset/train_0.5_setting1.h5 \
+  --circle-sampling-mode true_interface \
+  --model out/curvature-v1_layer4.pt \
+  --device cpu \
+  --batch-size 8192 \
+  --num-threads 14 \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name curvature-eval-trueinterface-curvature \
+  --swanlab-tags curvature,eval,hkappa,circle,true_interface \
+  --swanlab-logdir swanlog
+```
+
+For the fixed `reference_band` evaluation with `3h`:
+
+```bash
+python -m evaluate \
+  --geometry circle \
+  --circle-dataset dataset/train_0.5_setting1.h5 \
+  --circle-sampling-mode reference_band \
+  --circle-band-width-cells 3.0 \
+  --model out/noncurvature-v1_layer4.pt \
+  --device cpu \
+  --batch-size 8192 \
+  --num-threads 14 \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name curvature-eval-referenceband-3h-noncurvature \
+  --swanlab-tags curvature,eval,hkappa,circle,reference_band,3h \
   --swanlab-logdir swanlog
 ```

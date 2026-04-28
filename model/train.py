@@ -315,6 +315,39 @@ def aggregate_validation_metrics(all_validation_metrics: list[dict[str, Any]]) -
     }
 
 
+def aggregate_circle_test_metrics(all_test_metrics: list[dict[str, Any]]) -> dict[str, float]:
+    if not all_test_metrics:
+        return {
+            "test_curvature/field_count": 0.0,
+            "test_curvature/node_count": 0.0,
+            "test_curvature/mean_hkappa_mae": float("nan"),
+            "test_curvature/mean_hkappa_rmse": float("nan"),
+            "test_curvature/max_hkappa_ae": float("nan"),
+        }
+
+    node_counts = np.asarray([item["node_count"] for item in all_test_metrics], dtype=np.float64)
+    maes = np.asarray([item["hkappa_mae"] for item in all_test_metrics], dtype=np.float64)
+    mses = np.asarray([item["hkappa_mse"] for item in all_test_metrics], dtype=np.float64)
+    max_aes = np.asarray([item["hkappa_max_ae"] for item in all_test_metrics], dtype=np.float64)
+    weights = np.where(node_counts > 0.0, node_counts, 0.0)
+    total_nodes = float(np.sum(weights))
+
+    if total_nodes <= 0.0:
+        mean_mae = float(np.mean(maes))
+        mean_rmse = float(np.sqrt(np.mean(mses)))
+    else:
+        mean_mae = float(np.sum(maes * weights) / total_nodes)
+        mean_rmse = float(np.sqrt(np.sum(mses * weights) / total_nodes))
+
+    return {
+        "test_curvature/field_count": float(len(all_test_metrics)),
+        "test_curvature/node_count": total_nodes,
+        "test_curvature/mean_hkappa_mae": mean_mae,
+        "test_curvature/mean_hkappa_rmse": mean_rmse,
+        "test_curvature/max_hkappa_ae": float(np.max(max_aes)),
+    }
+
+
 def get_epoch_weights(train_config: TrainConfig, epoch: int) -> dict[str, float]:
     return {
         "traj": train_config.lambda_traj,
@@ -322,6 +355,109 @@ def get_epoch_weights(train_config: TrainConfig, epoch: int) -> dict[str, float]
         "interface": train_config.lambda_interface,
         "curvature": train_config.lambda_curvature if train_config.use_curvature_loss else 0.0,
     }
+
+
+def _bundle_blueprints_for_split(bundle: dict[str, Any], split_name: str) -> list[dict[str, Any]]:
+    indices = bundle.get("split_blueprint_indices", {}).get(split_name)
+    if indices is None:
+        raise KeyError(f"Bundle does not contain split_blueprint_indices[{split_name!r}].")
+    blueprints = bundle.get("blueprints", [])
+    return [blueprints[int(idx)] for idx in indices]
+
+
+def evaluate_circle_node_curvature_metrics(
+    model: nn.Module,
+    blueprint: dict[str, Any],
+    *,
+    final_step: int,
+    cfl: float,
+    device: torch.device | None = None,
+    node_band_width_cells: float = 1.0,
+    eval_batch_size: int = 4096,
+) -> dict[str, Any]:
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rho = int(blueprint["meta"]["resolution"])
+    cx = float(blueprint["params"]["center"][0])
+    cy = float(blueprint["params"]["center"][1])
+    radius = float(blueprint["params"]["radius"])
+    h = float(blueprint["params"]["h"])
+
+    x = np.linspace(0.0, 1.0, rho, dtype=np.float32)
+    X, Y = np.meshgrid(x, x, indexing="ij")
+    sdf = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2) - radius
+    node_mask = np.abs(sdf) <= (float(node_band_width_cells) * h)
+    if not np.any(node_mask):
+        node_mask.reshape(-1)[int(np.argmin(np.abs(sdf.reshape(-1))))] = True
+
+    x_nodes = X[node_mask].reshape(-1, 1).astype(np.float32)
+    y_nodes = Y[node_mask].reshape(-1, 1).astype(np.float32)
+    s_nodes = np.full_like(x_nodes, float(final_step) * float(cfl), dtype=np.float32)
+
+    hkappa_pred_chunks: list[np.ndarray] = []
+    model = model.to(device)
+    model.eval()
+
+    for start in range(0, x_nodes.shape[0], eval_batch_size):
+        end = min(start + eval_batch_size, x_nodes.shape[0])
+        xt = torch.from_numpy(x_nodes[start:end]).to(device).requires_grad_(True)
+        yt = torch.from_numpy(y_nodes[start:end]).to(device).requires_grad_(True)
+        st = torch.from_numpy(s_nodes[start:end]).to(device).requires_grad_(True)
+        cxt = torch.full_like(xt, cx)
+        cyt = torch.full_like(yt, cy)
+        rt = torch.full_like(xt, radius)
+        ht = torch.full_like(xt, h)
+        with torch.enable_grad():
+            kappa_pred = compute_model_curvature(model, xt, yt, cxt, cyt, rt, st)
+        hkappa_pred_chunks.append((ht * kappa_pred).detach().cpu().numpy().reshape(-1))
+
+    hkappa_pred = np.concatenate(hkappa_pred_chunks, axis=0)
+    hkappa_true = np.full_like(hkappa_pred, fill_value=h / max(radius, EPS), dtype=np.float32)
+    abs_error = np.abs(hkappa_pred - hkappa_true)
+    sq_error = (hkappa_pred - hkappa_true) ** 2
+
+    return {
+        "blueprint": blueprint,
+        "node_count": int(hkappa_pred.shape[0]),
+        "rho": rho,
+        "h": h,
+        "radius": radius,
+        "true_hkappa": float(h / max(radius, EPS)),
+        "hkappa_mae": float(np.mean(abs_error)),
+        "hkappa_mse": float(np.mean(sq_error)),
+        "hkappa_max_ae": float(np.max(abs_error)),
+    }
+
+
+def summarize_test_curvature_metrics(
+    model: nn.Module,
+    bundle: dict[str, Any],
+    *,
+    data_config,
+    device: torch.device | None = None,
+    node_band_width_cells: float = 1.0,
+    eval_batch_size: int = 4096,
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    test_blueprints = _bundle_blueprints_for_split(bundle, "test")
+    all_test_metrics = [
+        evaluate_circle_node_curvature_metrics(
+            model,
+            blueprint,
+            final_step=max(data_config.reinit_steps),
+            cfl=float(bundle["reinit_config"].cfl),
+            device=device,
+            node_band_width_cells=node_band_width_cells,
+            eval_batch_size=eval_batch_size,
+        )
+        for blueprint in test_blueprints
+    ]
+    summary = aggregate_circle_test_metrics(all_test_metrics)
+
+    print(f"Test curvature fields:     {int(summary['test_curvature/field_count'])}")
+    print(f"Test curvature nodes:      {int(summary['test_curvature/node_count'])}")
+    print(f"Mean h*kappa MAE:          {summary['test_curvature/mean_hkappa_mae']:.6e}")
+    print(f"Mean h*kappa RMSE:         {summary['test_curvature/mean_hkappa_rmse']:.6e}")
+    print(f"Max h*kappa abs error:     {summary['test_curvature/max_hkappa_ae']:.6e}")
+    return all_test_metrics, summary
 
 
 def train_model(
@@ -840,6 +976,13 @@ def main() -> None:
     print(f"Best epoch: {history['best_epoch']}")
     final_validation_metrics = summarize_validation_metrics(model, bundle, data_config=data_config, device=device)
     final_summary = aggregate_validation_metrics(final_validation_metrics)
+    _, test_curvature_summary = summarize_test_curvature_metrics(
+        model,
+        bundle,
+        data_config=data_config,
+        device=device,
+        eval_batch_size=train_config.batch_size,
+    )
     if swanlab_run is not None:
         best_epoch = int(history["best_epoch"])
         swanlab_run.log(
@@ -847,6 +990,7 @@ def main() -> None:
                 "summary/best_epoch": best_epoch,
                 "summary/best_val_total_monitor": float(history["val_total_monitor"][best_epoch]) if best_epoch >= 0 else float("nan"),
                 **final_summary,
+                **test_curvature_summary,
             },
             step=len(history["train_total"]),
         )
