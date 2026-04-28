@@ -9,7 +9,7 @@ def default_dataset_path(cfl: float = 0.5, setting: str = "setting1") -> Path:
 
 
 def default_output_model_path() -> Path:
-    return Path("out") / "pinn-1.pt"
+    return Path("out") / "pinn-3_curvature.pt"
 
 
 @dataclass(frozen=True)
@@ -21,10 +21,10 @@ class TrainConfig:
     patience: int = 30
     lambda_traj: float = 1.0
     lambda_pde: float = 1.0
-    lambda_interface: float = 3.0
-    use_curvature_loss: bool = False
-    lambda_curvature: float = 1.0
-    batch_size: int = 20480
+    lambda_interface: float = 1.0
+    use_curvature_loss: bool = True
+    lambda_curvature: float = 0.0001
+    batch_size: int = 204800
     seed: int = 42
     dataset_path: Path = field(default_factory=default_dataset_path)
     output_model_path: Path = field(default_factory=default_output_model_path)
