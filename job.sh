@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-#SBATCH -J pinn_train
-=======
-#SBATCH -J pinn_train_2
->>>>>>> a7b97edc67c372973e2a925f3b69cc9682c0b70b
+#SBATCH -J stencil_hkappa
 #SBATCH -p gpu
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
@@ -16,29 +12,20 @@
 
 set -euo pipefail
 
-# Load modules
 module load cuda12.6
 module load gcc12
-
-# Activate conda environment
 source activate pinn
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-echo "Project root: $ROOT_DIR"
-echo "Python: $(which python)"
-echo "CUDA: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'N/A')"
+python -m traingenerate.generate
 
-# 离线 SwanLab 训练
 python -m model.train \
-  --dataset-output dataset/train_0.5_setting1.h5 \
-  --batch-size 204800 \
+  --dataset-output dataset/train_stencil_setting1.h5 \
+  --batch-size 8192 \
   --use-swanlab \
   --swanlab-project PINN \
-  --swanlab-experiment-name version1_Curvature_weighted0.0001 \
-  --swanlab-tags Curvature,stage2 \
+  --swanlab-experiment-name stencil-hkappa \
+  --swanlab-tags stencil,hkappa \
   --swanlab-mode offline
-
-echo
-echo "Training finished."

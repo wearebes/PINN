@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import copy
+import csv
 from dataclasses import asdict
 import os
 from pathlib import Path
@@ -9,190 +9,83 @@ import sys
 import tempfile
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from model.config import TrainConfig, default_dataset_path, default_output_model_path
-    from model.model import EPS, ReinitPINN, compute_losses, compute_model_curvature, compute_phi0_from_circle, count_parameters
-    from traingenerate.generate import describe_bundle, load_training_bundle_from_hdf5, sample_interface_loader, sample_pde_loader
+    from model.model import HKappaStencilNet, count_parameters
+    from traingenerate.io import FIELD_ORDER, load_training_arrays_from_hdf5
 else:
     from .config import TrainConfig, default_dataset_path, default_output_model_path
-    from .model import EPS, ReinitPINN, compute_losses, compute_model_curvature, compute_phi0_from_circle, count_parameters
-    from traingenerate.generate import describe_bundle, load_training_bundle_from_hdf5, sample_interface_loader, sample_pde_loader
+    from .model import HKappaStencilNet, count_parameters
+    from traingenerate.io import FIELD_ORDER, load_training_arrays_from_hdf5
 
 
-def loader_batch_to_dict(loader, batch) -> dict[str, torch.Tensor]:
-    field_names = getattr(loader, "_field_names")
-    return {name: tensor for name, tensor in zip(field_names, batch, strict=True)}
-
-
-def cycle_loader(loader):
-    while True:
-        for batch in loader:
-            if isinstance(batch, dict):
-                yield batch
-            else:
-                yield loader_batch_to_dict(loader, batch)
-
-
-LOSS_KEYS = ("traj", "pde", "interface", "curvature", "total")
-
-
-def _bundle_traj_splits(bundle: dict[str, Any]) -> dict[str, dict[str, torch.Tensor]]:
-    traj_splits = bundle.get("traj_splits")
-    if traj_splits is not None:
-        return traj_splits
-
-    loaders = bundle.get("loaders")
-    if loaders is None:
-        raise KeyError("Bundle does not contain trajectory splits or trajectory loaders.")
-
-    traj_splits = {}
-    for split_name in ("train_traj", "val_traj", "test_traj"):
-        loader = loaders[split_name]
-        field_names = tuple(getattr(loader, "_field_names"))
-        traj_splits[split_name] = {
-            name: tensor
-            for name, tensor in zip(field_names, loader.dataset.tensors, strict=True)
-        }
-    bundle["traj_splits"] = traj_splits
-    return traj_splits
-
-
-def _preload_traj_splits(bundle: dict[str, Any], device: torch.device) -> dict[str, dict[str, torch.Tensor]]:
-    non_blocking = device.type == "cuda"
-    preloaded: dict[str, dict[str, torch.Tensor]] = {}
-    for split_name, split in _bundle_traj_splits(bundle).items():
-        preloaded[split_name] = {
-            key: value if value.device == device else value.to(device, non_blocking=non_blocking)
-            for key, value in split.items()
-        }
-    bundle["traj_splits"] = preloaded
-    return preloaded
-
-
-def _traj_split_nbytes(split: dict[str, torch.Tensor]) -> int:
-    return int(sum(tensor.numel() * tensor.element_size() for tensor in split.values()))
-
-
-def _traj_split_size(split: dict[str, torch.Tensor]) -> int:
-    first_tensor = next(iter(split.values()), None)
-    return int(first_tensor.shape[0]) if first_tensor is not None else 0
-
-
-def _traj_batch_count(split: dict[str, torch.Tensor], batch_size: int) -> int:
-    size = _traj_split_size(split)
-    return max(1, int(np.ceil(size / batch_size))) if size > 0 else 1
-
-
-def cycle_traj_split(
-    split: dict[str, torch.Tensor],
-    *,
-    batch_size: int,
-    shuffle: bool,
-):
-    size = _traj_split_size(split)
-    if size < 1:
-        raise ValueError("Trajectory split is empty.")
-
-    index_device = next(iter(split.values())).device
-    while True:
-        if shuffle:
-            order = torch.randperm(size, device=index_device)
-        else:
-            order = torch.arange(size, device=index_device)
-        for start in range(0, size, batch_size):
-            indices = order[start:start + batch_size]
-            yield {key: value.index_select(0, indices) for key, value in split.items()}
-
-
-def _loss_sums_to_means(sums: torch.Tensor, num_steps: int) -> dict[str, float]:
-    means = (sums / float(num_steps)).detach().cpu().tolist()
-    return {key: float(value) for key, value in zip(LOSS_KEYS, means, strict=True)}
-
-
-def evaluate_epoch(
-    model: nn.Module,
-    *,
-    traj_split: dict[str, torch.Tensor],
-    batch_size: int,
-    pde_loader,
-    interface_loader,
-    device: torch.device,
-    criterion: nn.Module,
-    eps_sign_factor: float,
-    weights: dict[str, float],
-) -> dict[str, float]:
-    model.eval()
-    traj_iter = cycle_traj_split(traj_split, batch_size=batch_size, shuffle=False)
-    pde_iter = cycle_loader(pde_loader)
-    interface_iter = cycle_loader(interface_loader)
-    num_steps = max(_traj_batch_count(traj_split, batch_size), len(pde_loader), len(interface_loader))
-    sums = torch.zeros(len(LOSS_KEYS), dtype=torch.float64, device=device)
-
-    for _ in range(num_steps):
-        with torch.enable_grad():
-            losses = compute_losses(
-                model,
-                traj_batch=next(traj_iter),
-                pde_batch=next(pde_iter),
-                interface_batch=next(interface_iter),
-                device=device,
-                criterion=criterion,
-                eps_sign_factor=eps_sign_factor,
-                weights=weights,
-            )
-        sums += torch.stack([losses[key].detach().to(dtype=torch.float64) for key in LOSS_KEYS])
-
-    return _loss_sums_to_means(sums, num_steps)
+def create_optimizer(model: nn.Module, train_config: TrainConfig) -> torch.optim.Optimizer:
+    return torch.optim.Adam(model.parameters(), lr=train_config.lr)
 
 
 def save_checkpoint(model: nn.Module, path: str | Path) -> Path:
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     state_dict = model.state_dict()
-
-    fd, tmp_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.stem}.",
-        suffix=f"{path.suffix}.tmp",
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=f"{path.suffix}.tmp")
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as handle:
             torch.save(state_dict, handle)
             handle.flush()
             os.fsync(handle.fileno())
-
-        loaded_state = torch.load(tmp_path, map_location="cpu")
-        if not isinstance(loaded_state, dict) or not loaded_state:
-            raise RuntimeError(f"Checkpoint verification failed for temporary file: {tmp_path}")
-
         os.replace(tmp_path, path)
-        try:
-            dir_fd = os.open(path.parent, os.O_DIRECTORY)
-        except OSError:
-            dir_fd = None
-        if dir_fd is not None:
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
-
-    if not path.exists() or path.stat().st_size <= 0:
-        raise RuntimeError(f"Checkpoint was not persisted correctly: {path}")
     return path
 
 
-def create_optimizer(model: nn.Module, train_config: TrainConfig) -> torch.optim.Optimizer:
-    return torch.optim.Adam(model.parameters(), lr=train_config.lr)
+def normalization_csv_path(model_path: str | Path) -> Path:
+    model_path = Path(model_path)
+    return model_path.with_name(f"{model_path.stem}_phi9_normalization.csv")
+
+
+def compute_phi9_normalization(train_phi9: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mean = np.mean(train_phi9, axis=0, dtype=np.float64).astype(np.float32)
+    std = np.std(train_phi9, axis=0, dtype=np.float64).astype(np.float32)
+    std = np.where(std > 0.0, std, 1.0).astype(np.float32)
+    return mean, std
+
+
+def apply_phi9_normalization(
+    dataset_bundle: dict[str, Any],
+    *,
+    mean: np.ndarray,
+    std: np.ndarray,
+) -> dict[str, Any]:
+    normalized_splits: dict[str, dict[str, np.ndarray]] = {}
+    for split_name, split in dataset_bundle["splits"].items():
+        normalized_splits[split_name] = {
+            "phi9": ((split["phi9"] - mean) / std).astype(np.float32, copy=False),
+            "hkappa_target": split["hkappa_target"].astype(np.float32, copy=False),
+        }
+    return {
+        **dataset_bundle,
+        "splits": normalized_splits,
+    }
+
+
+def save_phi9_normalization_csv(path: str | Path, *, mean: np.ndarray, std: np.ndarray) -> Path:
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["phi_index", "mean", "std", "variance"])
+        for idx in range(mean.shape[0]):
+            writer.writerow([idx + 1, float(mean[idx]), float(std[idx]), float(std[idx] ** 2)])
+    return path
 
 
 def _csv_to_list(raw: str) -> list[str]:
@@ -208,39 +101,23 @@ def build_swanlab_config(
     device: torch.device,
     parameter_count: int,
 ) -> dict[str, Any]:
-    data_cfg = bundle["config"]
-    reinit_cfg = bundle["reinit_config"]
-    generation_cfg = bundle.get("generation_config")
-    split_counts = bundle.get("split_blueprint_counts", {})
-    sizes = bundle.get("sizes", {})
-
     config: dict[str, Any] = {
+        "task": "3x3 phi stencil -> h*kappa",
         "dataset_path": str(Path(dataset_path).resolve()),
-        "dataset_name": Path(dataset_path).name,
         "checkpoint_path": str(Path(checkpoint_path).resolve()),
         "device": str(device),
         "parameter_count": int(parameter_count),
     }
+    config.update({f"train/{key}": str(value) if isinstance(value, Path) else value for key, value in asdict(train_config).items()})
+    config.update({f"data/{key}": value for key, value in asdict(bundle["config"]).items()})
     config.update(
         {
-            f"train/{key}": value
-            for key, value in asdict(train_config).items()
-            if key not in {"dataset_path", "output_model_path"}
+            f"generation/{key}": str(value) if isinstance(value, Path) else value
+            for key, value in asdict(bundle["generation_config"]).items()
         }
     )
-    config["train/dataset_path"] = str(Path(train_config.dataset_path).resolve())
-    config["train/output_model_path"] = str(Path(train_config.output_model_path).resolve())
-    config.update({f"data/{key}": value for key, value in asdict(data_cfg).items()})
-    if generation_cfg is not None:
-        config.update(
-            {
-                f"generation/{key}": str(value) if isinstance(value, Path) else value
-                for key, value in asdict(generation_cfg).items()
-            }
-        )
-    config.update({f"reinit/{key}": value for key, value in asdict(reinit_cfg).items()})
-    config.update({f"split_blueprints/{key}": int(value) for key, value in split_counts.items()})
-    config.update({f"split_sizes/{key}": int(value) for key, value in sizes.items()})
+    config.update({f"split_blueprints/{key}": int(value) for key, value in bundle.get("split_blueprint_counts", {}).items()})
+    config.update({f"split_sizes/{key}": int(value) for key, value in bundle.get("sizes", {}).items()})
     return config
 
 
@@ -264,9 +141,7 @@ def init_swanlab_run(
     try:
         import swanlab
     except ImportError as exc:
-        raise ImportError(
-            "SwanLab logging was requested, but the `swanlab` package is not installed in the current environment."
-        ) from exc
+        raise ImportError("SwanLab logging was requested, but `swanlab` is not installed.") from exc
 
     init_kwargs: dict[str, Any] = {
         "project": project,
@@ -287,368 +162,135 @@ def init_swanlab_run(
         ),
     }
     init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}
-    run = swanlab.init(**init_kwargs)
-    run.log(
-        {
-            "system/parameter_count": int(parameter_count),
-        },
-        step=0,
+    return swanlab.init(**init_kwargs)
+
+
+def loader_batch_to_dict(loader, batch) -> dict[str, torch.Tensor]:
+    field_names = getattr(loader, "_field_names")
+    return {name: tensor for name, tensor in zip(field_names, batch, strict=True)}
+
+
+def make_loader(split: dict[str, torch.Tensor], *, batch_size: int, shuffle: bool) -> DataLoader:
+    dataset = TensorDataset(*(split[name] for name in FIELD_ORDER))
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    loader._field_names = FIELD_ORDER  # type: ignore[attr-defined]
+    return loader
+
+
+def build_torch_splits(dataset_bundle: dict[str, Any]) -> dict[str, dict[str, torch.Tensor]]:
+    return {
+        split_name: {
+            field_name: torch.from_numpy(split[field_name])
+            for field_name in FIELD_ORDER
+        }
+        for split_name, split in dataset_bundle["splits"].items()
+    }
+
+
+def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int) -> None:
+    data_cfg = dataset_bundle["config"]
+    generation_cfg = dataset_bundle["generation_config"]
+    print("Task: 3x3 phi stencil -> h*kappa")
+    print(f"Number of blueprints: {len(dataset_bundle['blueprints'])}")
+    print(f"Resolutions: {data_cfg.resolutions}")
+    print(f"Initial field types: {data_cfg.initial_field_types}")
+    print(f"Samples per circle per field type: {data_cfg.n_samples_per_circle}")
+    print(f"Dataset generation batch size: {generation_cfg.generation_batch_size}")
+    print(f"Training batch size: {batch_size}")
+    print(
+        f"Blueprint split fractions: train={data_cfg.train_fraction}, "
+        f"val={data_cfg.val_fraction}, test={1.0 - data_cfg.train_fraction - data_cfg.val_fraction}"
     )
-    return run
+    for split_name, split_size in dataset_bundle["sizes"].items():
+        print(f"{split_name:>5s}: {split_size}")
 
 
-def aggregate_validation_metrics(all_validation_metrics: list[dict[str, Any]]) -> dict[str, float]:
-    if not all_validation_metrics:
-        return {
-            "validation/field_count": 0.0,
-            "validation/mean_sdf_abs_mae": float("nan"),
-            "validation/mean_eikonal_band_mae": float("nan"),
-            "validation/mean_interface_drift_mae": float("nan"),
-            "validation/mean_curvature_mae": float("nan"),
-        }
-    return {
-        "validation/field_count": float(len(all_validation_metrics)),
-        "validation/mean_sdf_abs_mae": float(np.mean([item["sdf_abs_mae"] for item in all_validation_metrics])),
-        "validation/mean_eikonal_band_mae": float(np.mean([item["eikonal_band_mae"] for item in all_validation_metrics])),
-        "validation/mean_interface_drift_mae": float(np.mean([item["interface_drift_mae"] for item in all_validation_metrics])),
-        "validation/mean_curvature_mae": float(np.mean([item["curvature_mae"] for item in all_validation_metrics])),
-    }
+def _move_batch_to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
+    non_blocking = device.type == "cuda"
+    return {key: value.to(device, non_blocking=non_blocking) for key, value in batch.items()}
 
 
-def aggregate_circle_test_metrics(all_test_metrics: list[dict[str, Any]]) -> dict[str, float]:
-    if not all_test_metrics:
-        return {
-            "test_curvature/field_count": 0.0,
-            "test_curvature/node_count": 0.0,
-            "test_curvature/mean_hkappa_mae": float("nan"),
-            "test_curvature/mean_hkappa_rmse": float("nan"),
-            "test_curvature/max_hkappa_ae": float("nan"),
-        }
-
-    node_counts = np.asarray([item["node_count"] for item in all_test_metrics], dtype=np.float64)
-    maes = np.asarray([item["hkappa_mae"] for item in all_test_metrics], dtype=np.float64)
-    mses = np.asarray([item["hkappa_mse"] for item in all_test_metrics], dtype=np.float64)
-    max_aes = np.asarray([item["hkappa_max_ae"] for item in all_test_metrics], dtype=np.float64)
-    weights = np.where(node_counts > 0.0, node_counts, 0.0)
-    total_nodes = float(np.sum(weights))
-
-    if total_nodes <= 0.0:
-        mean_mae = float(np.mean(maes))
-        mean_rmse = float(np.sqrt(np.mean(mses)))
-    else:
-        mean_mae = float(np.sum(maes * weights) / total_nodes)
-        mean_rmse = float(np.sqrt(np.sum(mses * weights) / total_nodes))
-
-    return {
-        "test_curvature/field_count": float(len(all_test_metrics)),
-        "test_curvature/node_count": total_nodes,
-        "test_curvature/mean_hkappa_mae": mean_mae,
-        "test_curvature/mean_hkappa_rmse": mean_rmse,
-        "test_curvature/max_hkappa_ae": float(np.max(max_aes)),
-    }
-
-
-def get_epoch_weights(train_config: TrainConfig, epoch: int) -> dict[str, float]:
-    return {
-        "traj": train_config.lambda_traj,
-        "pde": train_config.lambda_pde,
-        "interface": train_config.lambda_interface,
-        "curvature": train_config.lambda_curvature if train_config.use_curvature_loss else 0.0,
-    }
-
-
-def _bundle_blueprints_for_split(bundle: dict[str, Any], split_name: str) -> list[dict[str, Any]]:
-    indices = bundle.get("split_blueprint_indices", {}).get(split_name)
-    if indices is None:
-        raise KeyError(f"Bundle does not contain split_blueprint_indices[{split_name!r}].")
-    blueprints = bundle.get("blueprints", [])
-    return [blueprints[int(idx)] for idx in indices]
-
-
-def evaluate_circle_node_curvature_metrics(
-    model: nn.Module,
-    blueprint: dict[str, Any],
+def run_epoch(
+    model: HKappaStencilNet,
+    loader,
     *,
-    final_step: int,
-    cfl: float,
-    device: torch.device | None = None,
-    node_band_width_cells: float = 1.0,
-    eval_batch_size: int = 4096,
-) -> dict[str, Any]:
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    rho = int(blueprint["meta"]["resolution"])
-    cx = float(blueprint["params"]["center"][0])
-    cy = float(blueprint["params"]["center"][1])
-    radius = float(blueprint["params"]["radius"])
-    h = float(blueprint["params"]["h"])
-
-    x = np.linspace(0.0, 1.0, rho, dtype=np.float32)
-    X, Y = np.meshgrid(x, x, indexing="ij")
-    sdf = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2) - radius
-    node_mask = np.abs(sdf) <= (float(node_band_width_cells) * h)
-    if not np.any(node_mask):
-        node_mask.reshape(-1)[int(np.argmin(np.abs(sdf.reshape(-1))))] = True
-
-    x_nodes = X[node_mask].reshape(-1, 1).astype(np.float32)
-    y_nodes = Y[node_mask].reshape(-1, 1).astype(np.float32)
-    s_nodes = np.full_like(x_nodes, float(final_step) * float(cfl), dtype=np.float32)
-
-    hkappa_pred_chunks: list[np.ndarray] = []
-    model = model.to(device)
-    model.eval()
-
-    for start in range(0, x_nodes.shape[0], eval_batch_size):
-        end = min(start + eval_batch_size, x_nodes.shape[0])
-        xt = torch.from_numpy(x_nodes[start:end]).to(device).requires_grad_(True)
-        yt = torch.from_numpy(y_nodes[start:end]).to(device).requires_grad_(True)
-        st = torch.from_numpy(s_nodes[start:end]).to(device).requires_grad_(True)
-        cxt = torch.full_like(xt, cx)
-        cyt = torch.full_like(yt, cy)
-        rt = torch.full_like(xt, radius)
-        ht = torch.full_like(xt, h)
-        with torch.enable_grad():
-            kappa_pred = compute_model_curvature(model, xt, yt, cxt, cyt, rt, st)
-        hkappa_pred_chunks.append((ht * kappa_pred).detach().cpu().numpy().reshape(-1))
-
-    hkappa_pred = np.concatenate(hkappa_pred_chunks, axis=0)
-    hkappa_true = np.full_like(hkappa_pred, fill_value=h / max(radius, EPS), dtype=np.float32)
-    abs_error = np.abs(hkappa_pred - hkappa_true)
-    sq_error = (hkappa_pred - hkappa_true) ** 2
-
-    return {
-        "blueprint": blueprint,
-        "node_count": int(hkappa_pred.shape[0]),
-        "rho": rho,
-        "h": h,
-        "radius": radius,
-        "true_hkappa": float(h / max(radius, EPS)),
-        "hkappa_mae": float(np.mean(abs_error)),
-        "hkappa_mse": float(np.mean(sq_error)),
-        "hkappa_max_ae": float(np.max(abs_error)),
-    }
-
-
-def summarize_test_curvature_metrics(
-    model: nn.Module,
-    bundle: dict[str, Any],
-    *,
-    data_config,
-    device: torch.device | None = None,
-    node_band_width_cells: float = 1.0,
-    eval_batch_size: int = 4096,
-) -> tuple[list[dict[str, Any]], dict[str, float]]:
-    test_blueprints = _bundle_blueprints_for_split(bundle, "test")
-    all_test_metrics = [
-        evaluate_circle_node_curvature_metrics(
-            model,
-            blueprint,
-            final_step=max(data_config.reinit_steps),
-            cfl=float(bundle["reinit_config"].cfl),
-            device=device,
-            node_band_width_cells=node_band_width_cells,
-            eval_batch_size=eval_batch_size,
-        )
-        for blueprint in test_blueprints
-    ]
-    summary = aggregate_circle_test_metrics(all_test_metrics)
-
-    print(f"Test curvature fields:     {int(summary['test_curvature/field_count'])}")
-    print(f"Test curvature nodes:      {int(summary['test_curvature/node_count'])}")
-    print(f"Mean h*kappa MAE:          {summary['test_curvature/mean_hkappa_mae']:.6e}")
-    print(f"Mean h*kappa RMSE:         {summary['test_curvature/mean_hkappa_rmse']:.6e}")
-    print(f"Max h*kappa abs error:     {summary['test_curvature/max_hkappa_ae']:.6e}")
-    return all_test_metrics, summary
+    device: torch.device,
+    optimizer: torch.optim.Optimizer | None,
+) -> float:
+    training = optimizer is not None
+    model.train(mode=training)
+    total_loss = 0.0
+    total_count = 0
+    for raw_batch in loader:
+        batch = _move_batch_to_device(loader_batch_to_dict(loader, raw_batch), device)
+        _, loss = model.predict_and_loss(batch["phi9"], batch["hkappa_target"])
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+        batch_size = int(batch["phi9"].shape[0])
+        total_loss += float(loss.detach().item()) * batch_size
+        total_count += batch_size
+    if total_count == 0:
+        raise ValueError("Encountered an empty split during training.")
+    return total_loss / total_count
 
 
 def train_model(
-    model: nn.Module,
+    model: HKappaStencilNet,
     *,
     bundle: dict[str, Any],
     train_config: TrainConfig | None = None,
     device: torch.device | None = None,
     checkpoint_path: str | Path | None = None,
-    output_model_path: str | Path | None = None,
     optimizer: torch.optim.Optimizer | None = None,
     swanlab_run: Any | None = None,
 ) -> tuple[nn.Module, dict[str, Any]]:
     train_config = train_config or TrainConfig()
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else Path("best_reinit_pinn.pt")
-    checkpoint_path = checkpoint_path.resolve()
-    output_model_path = Path(output_model_path) if output_model_path is not None else Path(train_config.output_model_path)
-    output_model_path = output_model_path.resolve()
+    checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else Path(train_config.output_model_path)
 
     torch.manual_seed(train_config.seed)
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
-    criterion = nn.MSELoss()
+
     model = model.to(device)
-    optimizer = optimizer or torch.optim.Adam(model.parameters(), lr=train_config.lr)
-
-    traj_splits = _preload_traj_splits(bundle, device)
-    preload_summary = ", ".join(
-        f"{split_name}={_traj_split_size(split)} samples/{_traj_split_nbytes(split) / (1024 ** 2):.2f} MiB"
-        for split_name, split in traj_splits.items()
-    )
-    print(f"Trajectory splits preloaded on {device}: {preload_summary}")
-    reinit_cfg = bundle["reinit_config"]
+    optimizer = optimizer or create_optimizer(model, train_config)
+    train_loader = make_loader(bundle["splits"]["train"], batch_size=train_config.batch_size, shuffle=True)
+    val_loader = make_loader(bundle["splits"]["val"], batch_size=train_config.batch_size, shuffle=False)
     history: dict[str, Any] = {
-        "train_traj": [],
-        "train_pde": [],
-        "train_interface": [],
-        "train_curvature": [],
-        "train_total": [],
-        "val_traj": [],
-        "val_pde": [],
-        "val_interface": [],
-        "val_curvature": [],
-        "val_total": [],
-        "val_total_monitor": [],
-        "weight_traj": [],
-        "weight_pde": [],
-        "weight_interface": [],
-        "weight_curvature": [],
+        "train_hk": [],
+        "val_hk": [],
         "best_epoch": -1,
-        "best_checkpoint_path": str(checkpoint_path),
-        "output_model_path": str(output_model_path),
+        "best_checkpoint_path": str(checkpoint_path.resolve()),
     }
-
-    best_val_total = float("inf")
+    best_val = float("inf")
     best_state = None
     wait = 0
-    train_traj_iter = cycle_traj_split(
-        traj_splits["train_traj"],
-        batch_size=train_config.batch_size,
-        shuffle=True,
-    )
 
     for epoch in range(train_config.max_epochs):
-        model.train()
-        weights = get_epoch_weights(train_config, epoch)
-        train_pde_loader = sample_pde_loader(
-            bundle,
-            "train",
-            seed=train_config.seed + epoch,
-            batch_size=train_config.batch_size,
-            shuffle=True,
-            device=device,
-        )
-        train_interface_loader = sample_interface_loader(
-            bundle,
-            "train",
-            seed=train_config.seed + 100_000 + epoch,
-            batch_size=train_config.batch_size,
-            shuffle=True,
-            device=device,
-        )
-        train_pde_iter = cycle_loader(train_pde_loader)
-        train_interface_iter = cycle_loader(train_interface_loader)
-        train_steps = max(
-            _traj_batch_count(traj_splits["train_traj"], train_config.batch_size),
-            len(train_pde_loader),
-            len(train_interface_loader),
-        )
-        train_sums = torch.zeros(len(LOSS_KEYS), dtype=torch.float64, device=device)
-
-        for _ in range(train_steps):
-            optimizer.zero_grad()
-            losses = compute_losses(
-                model,
-                traj_batch=next(train_traj_iter),
-                pde_batch=next(train_pde_iter),
-                interface_batch=next(train_interface_iter),
-                device=device,
-                criterion=criterion,
-                eps_sign_factor=reinit_cfg.eps_sign_factor,
-                weights=weights,
-            )
-            losses["total"].backward()
-            optimizer.step()
-            train_sums += torch.stack([losses[key].detach().to(dtype=torch.float64) for key in LOSS_KEYS])
-
-        train_means = _loss_sums_to_means(train_sums, train_steps)
-        val_pde_loader = sample_pde_loader(
-            bundle,
-            "val",
-            seed=train_config.seed + 200_000 + epoch,
-            batch_size=train_config.batch_size,
-            shuffle=False,
-            device=device,
-        )
-        val_interface_loader = sample_interface_loader(
-            bundle,
-            "val",
-            seed=train_config.seed + 300_000 + epoch,
-            batch_size=train_config.batch_size,
-            shuffle=False,
-            device=device,
-        )
-        val_means = evaluate_epoch(
-            model,
-            traj_split=traj_splits["val_traj"],
-            batch_size=train_config.batch_size,
-            pde_loader=val_pde_loader,
-            interface_loader=val_interface_loader,
-            device=device,
-            criterion=criterion,
-            eps_sign_factor=reinit_cfg.eps_sign_factor,
-            weights=weights,
-        )
-        val_monitor_means = val_means
-
-        for key in ("traj", "pde", "interface", "curvature", "total"):
-            history[f"train_{key}"].append(train_means[key])  # type: ignore[index]
-            history[f"val_{key}"].append(val_means[key])  # type: ignore[index]
-        history["val_total_monitor"].append(val_monitor_means["total"])
-        history["weight_traj"].append(weights["traj"])
-        history["weight_pde"].append(weights["pde"])
-        history["weight_interface"].append(weights["interface"])
-        history["weight_curvature"].append(weights["curvature"])
+        train_loss = run_epoch(model, train_loader, device=device, optimizer=optimizer)
+        val_loss = run_epoch(model, val_loader, device=device, optimizer=None)
+        history["train_hk"].append(train_loss)
+        history["val_hk"].append(val_loss)
 
         print(
-            f"Epoch {epoch:03d} | "
-            f"Weights(Traj/PDE/Interface/Curv): "
-            f"{weights['traj']:.3f}/{weights['pde']:.3f}/{weights['interface']:.3f}/{weights['curvature']:.3f} | "
-            f"Train Traj: {train_means['traj']:.6e} | "
-            f"Train PDE: {train_means['pde']:.6e} | "
-            f"Train Interface: {train_means['interface']:.6e} | "
-            f"Train Curv: {train_means['curvature']:.6e} | "
-            f"Train Total: {train_means['total']:.6e}"
-        )
-        print(
-            f"           Val Traj: {val_means['traj']:.6e} | "
-            f"Val PDE: {val_means['pde']:.6e} | "
-            f"Val Interface: {val_means['interface']:.6e} | "
-            f"Val Curv: {val_means['curvature']:.6e} | "
-            f"Val Total: {val_means['total']:.6e} | "
-            f"Monitor Total: {val_monitor_means['total']:.6e}"
+            f"Epoch {epoch:03d} | Train hk MSE: {train_loss:.6e} | "
+            f"Val hk MSE: {val_loss:.6e}"
         )
         if swanlab_run is not None:
             swanlab_run.log(
                 {
-                    "train/traj_loss": train_means["traj"],
-                    "train/pde_loss": train_means["pde"],
-                    "train/interface_loss": train_means["interface"],
-                    "train/curvature_loss": train_means["curvature"],
-                    "train/total_loss": train_means["total"],
-                    "val/traj_loss": val_means["traj"],
-                    "val/pde_loss": val_means["pde"],
-                    "val/interface_loss": val_means["interface"],
-                    "val/curvature_loss": val_means["curvature"],
-                    "val/total_loss": val_means["total"],
-                    "val/monitor_total_loss": val_monitor_means["total"],
-                    "weights/traj": weights["traj"],
-                    "weights/pde": weights["pde"],
-                    "weights/interface": weights["interface"],
-                    "weights/curvature": weights["curvature"],
-                    "monitor/best_val_total": min(best_val_total, val_monitor_means["total"]),
+                    "train/hk_mse": train_loss,
+                    "val/hk_mse": val_loss,
+                    "monitor/best_val_hk_mse": min(best_val, val_loss),
                 },
                 step=epoch + 1,
             )
 
-        if val_monitor_means["total"] < best_val_total:
-            best_val_total = val_monitor_means["total"]
-            best_state = copy.deepcopy(model.state_dict())
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             history["best_epoch"] = epoch
             wait = 0
             save_checkpoint(model, checkpoint_path)
@@ -661,221 +303,20 @@ def train_model(
     if best_state is not None:
         model.load_state_dict(best_state)
         save_checkpoint(model, checkpoint_path)
-    save_checkpoint(model, output_model_path)
     return model, history
-
-
-def plot_loss_history(history: dict[str, list[float] | int]) -> None:
-    epochs = np.arange(1, len(history["train_total"]) + 1)
-    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
-
-    axes[0].plot(epochs, history["train_traj"], label="Train Traj")
-    axes[0].plot(epochs, history["train_pde"], label="Train PDE")
-    axes[0].plot(epochs, history["train_interface"], label="Train Interface")
-    axes[0].plot(epochs, history["train_total"], label="Train Total", linewidth=2)
-    axes[0].set_yscale("log")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_title("Training Losses")
-    axes[0].legend()
-
-    axes[1].plot(epochs, history["val_traj"], label="Val Traj")
-    axes[1].plot(epochs, history["val_pde"], label="Val PDE")
-    axes[1].plot(epochs, history["val_interface"], label="Val Interface")
-    axes[1].plot(epochs, history["val_total"], label="Val Total", linewidth=2)
-    axes[1].set_yscale("log")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_title("Validation Losses")
-    axes[1].legend()
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_weight_schedule(history: dict[str, list[float] | int], train_config: TrainConfig | None = None) -> None:
-    epochs = np.arange(1, len(history["weight_pde"]) + 1)
-    plt.figure(figsize=(8, 4))
-    plt.plot(epochs, history["weight_traj"], label="Traj Weight")
-    plt.plot(epochs, history["weight_pde"], label="PDE Weight")
-    plt.plot(epochs, history["weight_interface"], label="Interface Weight")
-    plt.xlabel("Epoch")
-    plt.ylabel("Effective Weight")
-    plt.title("Loss Weight Schedule")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-def evaluate_sdf_metrics(
-    model: nn.Module,
-    field_record: dict[str, Any],
-    *,
-    final_step: int = 20,
-    cfl: float = 0.01,
-    device: torch.device | None = None,
-) -> dict[str, Any]:
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    blueprint = field_record["blueprint"]
-    h = float(blueprint["params"]["h"])
-    radius = float(blueprint["params"]["radius"])
-    rho = int(blueprint["meta"]["resolution"])
-
-    x = np.linspace(0.0, 1.0, rho, dtype=np.float32)
-    X, Y = np.meshgrid(x, x, indexing="ij")
-    s_final = np.full_like(X, final_step * cfl, dtype=np.float32)
-
-    xt = torch.from_numpy(X.reshape(-1, 1)).to(device).requires_grad_(True)
-    yt = torch.from_numpy(Y.reshape(-1, 1)).to(device).requires_grad_(True)
-    st = torch.from_numpy(s_final.reshape(-1, 1)).to(device).requires_grad_(True)
-    cx_t = torch.full_like(xt, float(blueprint["params"]["center"][0]))
-    cy_t = torch.full_like(yt, float(blueprint["params"]["center"][1]))
-    radius_t = torch.full_like(xt, radius)
-    model = model.to(device)
-    model.eval()
-
-    with torch.enable_grad():
-        phi0t = compute_phi0_from_circle(xt, yt, cx_t, cy_t, radius_t)
-        phi = model(xt, yt, phi0t, st)
-        phi_x = torch.autograd.grad(phi, xt, grad_outputs=torch.ones_like(phi), create_graph=True, retain_graph=True)[0]
-        phi_y = torch.autograd.grad(phi, yt, grad_outputs=torch.ones_like(phi), create_graph=True, retain_graph=True)[0]
-        grad_norm = torch.sqrt(phi_x.square() + phi_y.square() + EPS)
-
-    pred = phi.detach().cpu().numpy().reshape(X.shape)
-    grad = grad_norm.detach().cpu().numpy().reshape(X.shape)
-    sdf = np.asarray(field_record["sdf"], dtype=np.float32)
-    sdf_band = np.abs(sdf) <= (3.0 * h)
-    if not np.any(sdf_band):
-        sdf_band = np.ones_like(sdf, dtype=bool)
-
-    theta = np.linspace(0.0, 2.0 * np.pi, 512, endpoint=False, dtype=np.float32)
-    xi = float(blueprint["params"]["center"][0]) + radius * np.cos(theta)
-    yi = float(blueprint["params"]["center"][1]) + radius * np.sin(theta)
-    si = np.full_like(xi, final_step * cfl)
-
-    xi_t = torch.from_numpy(xi.reshape(-1, 1)).to(device).requires_grad_(True)
-    yi_t = torch.from_numpy(yi.reshape(-1, 1)).to(device).requires_grad_(True)
-    si_t = torch.from_numpy(si.reshape(-1, 1)).to(device).requires_grad_(True)
-    cxi_t = torch.full_like(xi_t, float(blueprint["params"]["center"][0]))
-    cyi_t = torch.full_like(yi_t, float(blueprint["params"]["center"][1]))
-    ri_t = torch.full_like(xi_t, radius)
-
-    with torch.enable_grad():
-        phi0_i_t = compute_phi0_from_circle(xi_t, yi_t, cxi_t, cyi_t, ri_t)
-        phi_i = model(xi_t, yi_t, phi0_i_t, si_t)
-        kappa_i = compute_model_curvature(model, xi_t, yi_t, cxi_t, cyi_t, ri_t, si_t)
-
-    interface_phi = phi_i.detach().cpu().numpy().reshape(-1)
-    kappa_pred = kappa_i.detach().cpu().numpy().reshape(-1)
-
-    return {
-        "blueprint": blueprint,
-        "grid_x": X,
-        "grid_y": Y,
-        "pred_final": pred,
-        "exact_sdf": sdf,
-        "sdf_abs_mae": float(np.mean(np.abs(pred - sdf))),
-        "eikonal_band_mae": float(np.mean(np.abs(grad[sdf_band] - 1.0))),
-        "interface_drift_mae": float(np.mean(np.abs(interface_phi))),
-        "curvature_mae": float(np.mean(np.abs(kappa_pred - (1.0 / radius)))),
-    }
-
-
-def plot_validation_snapshot(
-    model: nn.Module,
-    bundle: dict[str, Any],
-    *,
-    data_config,
-    device: torch.device | None = None,
-) -> dict[str, Any]:
-    validation_record = bundle["sdf_validation_fields"][len(bundle["sdf_validation_fields"]) // 2]
-    validation_metrics = evaluate_sdf_metrics(
-        model,
-        validation_record,
-        final_step=max(data_config.reinit_steps),
-        cfl=float(bundle["reinit_config"].cfl),
-        device=device,
-    )
-
-    pred_final = validation_metrics["pred_final"]
-    exact_sdf = validation_metrics["exact_sdf"]
-    abs_error = np.abs(pred_final - exact_sdf)
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    im0 = axes[0].imshow(pred_final.T, origin="lower", extent=[0, 1, 0, 1], cmap="coolwarm")
-    axes[0].set_title("Predicted Final Field")
-    axes[0].set_aspect("equal")
-    plt.colorbar(im0, ax=axes[0])
-
-    im1 = axes[1].imshow(exact_sdf.T, origin="lower", extent=[0, 1, 0, 1], cmap="coolwarm")
-    axes[1].set_title("Exact Circle SDF")
-    axes[1].set_aspect("equal")
-    plt.colorbar(im1, ax=axes[1])
-
-    im2 = axes[2].imshow(abs_error.T, origin="lower", extent=[0, 1, 0, 1], cmap="magma")
-    axes[2].set_title("Absolute Error")
-    axes[2].set_aspect("equal")
-    plt.colorbar(im2, ax=axes[2])
-
-    plt.tight_layout()
-    plt.show()
-
-    print(f"SDF abs MAE:      {validation_metrics['sdf_abs_mae']:.6e}")
-    print(f"Eikonal band MAE: {validation_metrics['eikonal_band_mae']:.6e}")
-    print(f"Interface drift:  {validation_metrics['interface_drift_mae']:.6e}")
-    print(f"Curvature MAE:    {validation_metrics['curvature_mae']:.6e}")
-    return validation_metrics
-
-
-def summarize_validation_metrics(
-    model: nn.Module,
-    bundle: dict[str, Any],
-    *,
-    data_config,
-    device: torch.device | None = None,
-) -> list[dict[str, Any]]:
-    all_validation_metrics = [
-        evaluate_sdf_metrics(
-            model,
-            record,
-            final_step=max(data_config.reinit_steps),
-            cfl=float(bundle["reinit_config"].cfl),
-            device=device,
-        )
-        for record in bundle["sdf_validation_fields"]
-    ]
-    summary = aggregate_validation_metrics(all_validation_metrics)
-
-    print(f"Validation fields:         {len(all_validation_metrics)}")
-    print(f"Mean SDF abs MAE:          {summary['validation/mean_sdf_abs_mae']:.6e}")
-    print(f"Mean Eikonal band MAE:     {summary['validation/mean_eikonal_band_mae']:.6e}")
-    print(f"Mean interface drift MAE:  {summary['validation/mean_interface_drift_mae']:.6e}")
-    print(f"Mean curvature MAE:        {summary['validation/mean_curvature_mae']:.6e}")
-    return all_validation_metrics
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     train_cfg = TrainConfig()
-    parser = argparse.ArgumentParser(description="Run the PINN training experiment from the command line.")
+    parser = argparse.ArgumentParser(description="Train the 3x3 stencil h*kappa predictor.")
     parser.add_argument("--dataset-output", type=str, default=str(default_dataset_path()))
-    parser.add_argument("--checkpoint", type=str, default="best_reinit_pinn.pt")
     parser.add_argument("--output-model", type=str, default=str(default_output_model_path()))
     parser.add_argument("--device", type=str, default="")
-    parser.add_argument("--plot", action="store_true")
     parser.add_argument("--hidden-units", type=int, default=train_cfg.hidden_units)
-    parser.add_argument("--activation", type=str, choices=("tanh", "silu", "relu"), default=train_cfg.activation)
     parser.add_argument("--lr", type=float, default=train_cfg.lr)
     parser.add_argument("--max-epochs", type=int, default=train_cfg.max_epochs)
     parser.add_argument("--patience", type=int, default=train_cfg.patience)
-    parser.add_argument("--lambda-traj", type=float, default=train_cfg.lambda_traj)
-    parser.add_argument("--lambda-pde", type=float, default=train_cfg.lambda_pde)
-    parser.add_argument("--lambda-interface", type=float, default=train_cfg.lambda_interface)
-    parser.add_argument("--use-curvature-loss", action="store_true", default=train_cfg.use_curvature_loss)
-    parser.add_argument("--lambda-curvature", type=float, default=train_cfg.lambda_curvature)
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=train_cfg.batch_size,
-        help="Training batch size. Defaults to TrainConfig.batch_size in model/config.py.",
-    )
+    parser.add_argument("--batch-size", type=int, default=train_cfg.batch_size)
     parser.add_argument("--seed", type=int, default=train_cfg.seed)
     parser.add_argument("--use-swanlab", action="store_true")
     parser.add_argument("--swanlab-project", type=str, default="PINN")
@@ -891,7 +332,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-
     dataset_path = Path(args.dataset_output)
     if not dataset_path.exists():
         raise FileNotFoundError(
@@ -901,45 +341,39 @@ def main() -> None:
 
     train_config = TrainConfig(
         hidden_units=args.hidden_units,
-        activation=args.activation,
         lr=args.lr,
         max_epochs=args.max_epochs,
         patience=args.patience,
-        lambda_traj=args.lambda_traj,
-        lambda_pde=args.lambda_pde,
-        lambda_interface=args.lambda_interface,
-        use_curvature_loss=bool(args.use_curvature_loss),
-        lambda_curvature=args.lambda_curvature,
         batch_size=args.batch_size,
         seed=args.seed,
-        dataset_path=Path(args.dataset_output),
+        dataset_path=dataset_path,
         output_model_path=Path(args.output_model),
     )
     if train_config.batch_size < 1:
-        raise ValueError("batch_size must be >= 1. Edit TrainConfig.batch_size or pass --batch-size with a positive integer.")
+        raise ValueError("batch_size must be >= 1.")
 
     print(f"Loading existing dataset from: {dataset_path.resolve()}")
-    bundle = load_training_bundle_from_hdf5(dataset_path, batch_size=train_config.batch_size)
-    data_config = bundle["config"]
-
+    dataset_bundle_raw = load_training_arrays_from_hdf5(dataset_path)
+    phi9_mean, phi9_std = compute_phi9_normalization(dataset_bundle_raw["splits"]["train"]["phi9"])
+    stats_csv_path = save_phi9_normalization_csv(
+        normalization_csv_path(train_config.output_model_path),
+        mean=phi9_mean,
+        std=phi9_std,
+    )
+    dataset_bundle = apply_phi9_normalization(dataset_bundle_raw, mean=phi9_mean, std=phi9_std)
+    bundle = {
+        **dataset_bundle,
+        "splits": build_torch_splits(dataset_bundle),
+    }
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ReinitPINN(hidden_units=train_config.hidden_units, activation=train_config.activation).to(device)
+    model = HKappaStencilNet(hidden_units=train_config.hidden_units)
     optimizer = create_optimizer(model, train_config)
 
     print(f"Device: {device}")
     print(f"Dataset file: {dataset_path.resolve()}")
     print(f"Parameter count: {count_parameters(model)}")
-    print(f"Activation: {train_config.activation}")
-    print(
-        f"Loss weights: traj={train_config.lambda_traj}, "
-        f"pde={train_config.lambda_pde}, interface={train_config.lambda_interface}, "
-        f"curvature={train_config.lambda_curvature if train_config.use_curvature_loss else 0.0}"
-    )
-    print(f"Use curvature loss: {train_config.use_curvature_loss}")
-    print(f"Training batch size: {train_config.batch_size}")
-    if bundle.get("generation_config") is not None:
-        print(f"Generation batch size: {bundle['generation_config'].generation_batch_size}")
-    describe_bundle(bundle)
+    describe_dataset_bundle(dataset_bundle, batch_size=train_config.batch_size)
+    print(f"Phi9 normalization CSV: {stats_csv_path.resolve()}")
 
     swanlab_run = None
     if args.use_swanlab:
@@ -947,7 +381,7 @@ def main() -> None:
             train_config=train_config,
             bundle=bundle,
             dataset_path=dataset_path,
-            checkpoint_path=args.checkpoint,
+            checkpoint_path=args.output_model,
             device=device,
             parameter_count=count_parameters(model),
             project=args.swanlab_project or None,
@@ -958,48 +392,30 @@ def main() -> None:
             workspace=args.swanlab_workspace or None,
             logdir=args.swanlab_logdir or None,
             mode=args.swanlab_mode or None,
-    )
+        )
 
     model, history = train_model(
         model,
         bundle=bundle,
         train_config=train_config,
         device=device,
-        checkpoint_path=args.checkpoint,
-        output_model_path=train_config.output_model_path,
+        checkpoint_path=args.output_model,
         optimizer=optimizer,
         swanlab_run=swanlab_run,
     )
 
-    print(f"Best checkpoint: {history['best_checkpoint_path']}")
-    print(f"Output model: {history['output_model_path']}")
-    print(f"Best epoch: {history['best_epoch']}")
-    final_validation_metrics = summarize_validation_metrics(model, bundle, data_config=data_config, device=device)
-    final_summary = aggregate_validation_metrics(final_validation_metrics)
-    _, test_curvature_summary = summarize_test_curvature_metrics(
-        model,
-        bundle,
-        data_config=data_config,
-        device=device,
-        eval_batch_size=train_config.batch_size,
-    )
     if swanlab_run is not None:
-        best_epoch = int(history["best_epoch"])
         swanlab_run.log(
             {
-                "summary/best_epoch": best_epoch,
-                "summary/best_val_total_monitor": float(history["val_total_monitor"][best_epoch]) if best_epoch >= 0 else float("nan"),
-                **final_summary,
-                **test_curvature_summary,
-            },
-            step=len(history["train_total"]),
+                "summary/best_epoch": int(history["best_epoch"]),
+                "summary/best_checkpoint_path": history["best_checkpoint_path"],
+                "summary/final_val_hk_mse": float(history["val_hk"][-1]),
+            }
         )
         swanlab_run.finish()
 
-    if args.plot:
-        plot_loss_history(history)
-        plot_weight_schedule(history, train_config)
-        plot_validation_snapshot(model, bundle, data_config=data_config, device=device)
+    print(f"Best epoch: {history['best_epoch']}")
+    print(f"Best checkpoint: {Path(history['best_checkpoint_path']).resolve()}")
 
 
 if __name__ == "__main__":
