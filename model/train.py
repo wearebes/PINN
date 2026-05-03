@@ -25,6 +25,7 @@ else:
     from traingenerate.io import FIELD_ORDER, load_training_arrays_from_hdf5
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def create_optimizer(model: nn.Module, train_config: TrainConfig) -> torch.optim.Optimizer:
     return torch.optim.Adam(model.parameters(), lr=train_config.lr)
 

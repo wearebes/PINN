@@ -14,12 +14,12 @@ def build_activation(name: str) -> nn.Module:
         return nn.ReLU()
     raise ValueError(f"Unsupported activation={name!r}; expected one of: tanh, silu, relu.")
 
-
-class HKappaStencilNet(nn.Module):
+class HKappamlp(nn.Module):
     def __init__(self, hidden_units: int = 128, activation: str = "relu") -> None:
         super().__init__()
         act = build_activation(activation)
         self.net = nn.Sequential(
+            nn.flatten(),
             nn.Linear(9, hidden_units),
             act,
             nn.Linear(hidden_units, hidden_units),
@@ -32,15 +32,15 @@ class HKappaStencilNet(nn.Module):
             build_activation(activation),
             nn.Linear(hidden_units, 1),
         )
-    def forward(self, phi9: torch.Tensor) -> torch.Tensor:
-        return self.net(phi9)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
     
-    def loss(self, phi9: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
-        prediction = self(phi9)
+    def loss(self, x: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
+        prediction = self(x)
         return nn.MSELoss()(prediction, hkappa_target)
 
-    def predict_and_loss(self, phi9: torch.Tensor, hkappa_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        prediction = self(phi9)
+    def predict_and_loss(self, x: torch.Tensor, hkappa_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        prediction = self(x)
         loss = nn.MSELoss()(prediction, hkappa_target)
         return prediction, loss
 

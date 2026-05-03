@@ -48,7 +48,7 @@ With SwanLab:
 
 ```bash
 python -m model.train \
-  --dataset-output dataset/train_stencil_setting1.h5 \
+  --dataset-output dataset/circle256.h5 \
   --batch-size 8192 \
   --output-model out/best_stencil_hkappa.pt \
   --use-swanlab \
@@ -56,3 +56,23 @@ python -m model.train \
   --swanlab-experiment-name stencil-hkappa \
   --swanlab-tags stencil,hkappa
 ```
+
+## 3. Evaluate Held-Out Test Geometry
+
+Use the dataset `test` split as a held-out geometry set. The evaluator reports:
+
+- `numeric_vs_analytic`: center-difference `h*kappa` from the same `phi9`
+- `model_vs_analytic`: model prediction against the analytic target
+- `model_vs_numeric`: model prediction against the numeric baseline
+
+Example with the current local artifacts:
+
+```bash
+python -m model.evaluate \
+  --dataset-output dataset/circle256.h5 \
+  --model-path out/best_stencil_hkappa.pt \
+  --normalization-csv out/best_stencil_hkappa_phi9_normalization.csv \
+  --split test
+```
+
+The evaluator fails if the normalization CSV is missing or incompatible, so inference always uses the same train-split normalization as training.

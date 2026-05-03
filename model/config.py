@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def default_dataset_path(setting: str = "setting1") -> Path:
-    return Path("dataset") / f"train_stencil_{setting}.h5"
+def default_dataset_path() -> Path:
+    return Path("dataset") / "circle256.h5"
 
 
 def default_output_model_path() -> Path:
