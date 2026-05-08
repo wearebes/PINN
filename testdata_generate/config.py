@@ -6,7 +6,7 @@ from pathlib import Path
 
 METHOD_CODE = "FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN"
 DEFAULT_OUTPUT_DIR = Path("test_data")
-DEFAULT_DATASET_NAME = f"test_{METHOD_CODE}.h5"
+DEFAULT_DATASET_NAME = f"test_{METHOD_CODE}_rho<RHO_MODEL>.h5"
 DATASET_SCHEMA_VERSION = 1
 
 
@@ -40,8 +40,9 @@ class TestDataConfig:
     stencil_encoding: str = "training_order"
     target_rule: str = "analytic_projection_current_nodes"
     method_code: str = METHOD_CODE
+    rho_model: int | None = None
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    dataset_name: str = DEFAULT_DATASET_NAME
+    dataset_name: str = ""
     scenarios: tuple[FlowerScenario, ...] = field(
         default_factory=lambda: (
             FlowerScenario("smooth_256", "smooth", 256, 0.207843, 107, 3.921569e-3, 0.05, 0.15, 3),
@@ -54,5 +55,25 @@ class TestDataConfig:
     )
 
     def output_path(self) -> Path:
-        return Path(self.output_dir) / self.dataset_name
+        dataset_name = self.dataset_name
+        if not dataset_name:
+            if self.rho_model is None:
+                raise ValueError("TestDataConfig.output_path requires either dataset_name or rho_model.")
+            dataset_name = flower_dataset_name(rho_model=self.rho_model)
+        return Path(self.output_dir) / dataset_name
 
+
+def flower_dataset_name(*, rho_model: int) -> str:
+    return f"test_{METHOD_CODE}_rho{int(rho_model)}.h5"
+
+
+def available_rho_models(scenarios: tuple[FlowerScenario, ...]) -> tuple[int, ...]:
+    return tuple(sorted({int(scenario.rho_model) for scenario in scenarios}))
+
+
+def filter_scenarios_by_rho_model(
+    scenarios: tuple[FlowerScenario, ...],
+    rho_model: int,
+) -> tuple[FlowerScenario, ...]:
+    target = int(rho_model)
+    return tuple(scenario for scenario in scenarios if int(scenario.rho_model) == target)

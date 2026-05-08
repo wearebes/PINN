@@ -3,38 +3,37 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from .config import MLP_TrainConfig, CNN_TrainConfig, TrainConfig
 
-def build_activation(name: str) -> nn.Module:
-    normalized = str(name).strip().lower()
-    if normalized == "tanh":
-        return nn.Tanh()
-    if normalized == "silu":
-        return nn.SiLU()
-    if normalized == "relu":
+def _build_activation(name: str) -> nn.Module:
+    name = name.strip().lower()
+    if name == "relu":
         return nn.ReLU()
-    raise ValueError(f"Unsupported activation={name!r}; expected one of: tanh, silu, relu.")
+    if name == "tanh":
+        return nn.Tanh()
+    if name == "silu":
+        return nn.SiLU()
+    raise ValueError(f"Unsupported activation: {name!r}")
 
 class HKappamlp(nn.Module):
-    def __init__(self, hidden_units: int = 128, activation: str = "relu") -> None:
+    def __init__(self, config: MLP_TrainConfig) -> None:
         super().__init__()
-        act = build_activation(activation)
         self.net = nn.Sequential(
-            nn.flatten(),
-            nn.Linear(9, hidden_units),
-            act,
-            nn.Linear(hidden_units, hidden_units),
-            build_activation(activation),
-            nn.Linear(hidden_units, hidden_units),
-            build_activation(activation),
-            nn.Linear(hidden_units, hidden_units),
-            build_activation(activation),
-            nn.Linear(hidden_units, hidden_units),
-            build_activation(activation),
-            nn.Linear(hidden_units, 1),
+            nn.Flatten(),
+            nn.Linear(9, config.hidden_units),
+            nn.Linear(config.hidden_units, config.hidden_units),
+            _build_activation(config.activation),
+            nn.Linear(config.hidden_units, config.hidden_units),
+            _build_activation(config.activation),
+            nn.Linear(config.hidden_units, config.hidden_units),
+            _build_activation(config.activation),
+            nn.Linear(config.hidden_units, config.hidden_units),
+            _build_activation(config.activation),
+            nn.Linear(config.hidden_units, 1),
         )
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
-    
+
     def loss(self, x: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
         prediction = self(x)
         return nn.MSELoss()(prediction, hkappa_target)
@@ -44,6 +43,30 @@ class HKappamlp(nn.Module):
         loss = nn.MSELoss()(prediction, hkappa_target)
         return prediction, loss
 
+
+class HKappaCNN(nn.Module):
+    def __init__(self, config: CNN_TrainConfig) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=config.kernel_size, padding=config.padding),
+            _build_activation(config.activation),
+            nn.Conv2d(32, 64, kernel_size=config.kernel_size, padding=config.padding),
+            _build_activation(config.activation),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def create_model(config: TrainConfig) -> nn.Module:
+    if isinstance(config, MLP_TrainConfig):
+        return HKappamlp(config)
+    if isinstance(config, CNN_TrainConfig):
+        return HKappaCNN(config)
+    raise TypeError(f"Unsupported config type: {type(config).__name__}")
+
 def count_parameters(model: nn.Module) -> int:
     return sum(parameter.numel() for parameter in model.parameters())
-

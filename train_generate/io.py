@@ -11,8 +11,13 @@ import numpy as np
 from .config import DataConfig, GenerationConfig, default_dataset_name
 
 
-DATASET_FORMAT_VERSION = 3
+DATASET_FORMAT_VERSION = 4
+SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4}
 FIELD_ORDER = ("phi9", "hkappa_target")
+FIELD_DTYPES = {
+    "phi9": np.float32,
+    "hkappa_target": np.float32,
+}
 DEFAULT_PREVIEW_SAMPLES = 5
 
 
@@ -90,6 +95,7 @@ def build_dataset_manifest(bundle: dict[str, Any], dataset_path: str | Path) -> 
             "generation": _json_ready(asdict(generation_cfg)),
         },
         "split_blueprint_counts": _json_ready(bundle.get("split_blueprint_counts", {})),
+        "split_shape_blueprint_counts": _json_ready(bundle.get("split_shape_blueprint_counts", {})),
         "splits": splits,
     }
 
@@ -124,9 +130,20 @@ def save_training_dataset_hdf5(
         handle.attrs["geometry_seed"] = int(data_cfg.geometry_seed)
         handle.attrs["variations"] = int(data_cfg.variations)
         handle.attrs["initial_field_types_json"] = json.dumps(list(data_cfg.initial_field_types))
-        handle.attrs["n_samples_per_circle"] = int(data_cfg.n_samples_per_circle)
+        handle.attrs["shape_types_json"] = json.dumps(list(data_cfg.shape_types))
         handle.attrs["train_fraction"] = float(data_cfg.train_fraction)
         handle.attrs["val_fraction"] = float(data_cfg.val_fraction)
+        handle.attrs["ellipse_num_a"] = int(data_cfg.ellipse_num_a)
+        handle.attrs["ellipse_variations_per_a"] = int(data_cfg.ellipse_variations_per_a)
+        handle.attrs["ellipse_axis_ratio_min"] = float(data_cfg.ellipse_axis_ratio_min)
+        handle.attrs["ellipse_axis_ratio_max"] = float(data_cfg.ellipse_axis_ratio_max)
+        handle.attrs["ellipse_rotation_min"] = float(data_cfg.ellipse_rotation_min)
+        handle.attrs["ellipse_rotation_max"] = float(data_cfg.ellipse_rotation_max)
+        handle.attrs["ellipse_a_min_factor"] = float(data_cfg.ellipse_a_min_factor)
+        handle.attrs["ellipse_sdf_newton_max_iter"] = int(data_cfg.ellipse_sdf_newton_max_iter)
+        handle.attrs["ellipse_sdf_newton_tol"] = float(data_cfg.ellipse_sdf_newton_tol)
+        handle.attrs["ellipse_hp_dps"] = int(data_cfg.ellipse_hp_dps)
+        handle.attrs["ellipse_hp_newton_max_iter"] = int(data_cfg.ellipse_hp_newton_max_iter)
         handle.attrs["generation_batch_size"] = int(generation_cfg.generation_batch_size)
         handle.attrs["num_workers"] = int(generation_cfg.num_workers)
         handle.attrs["output_dir"] = str(Path(generation_cfg.output_dir))
@@ -139,7 +156,11 @@ def save_training_dataset_hdf5(
         for split_name, split in bundle["splits"].items():
             group = handle.create_group(split_name)
             for field_name in FIELD_ORDER:
-                group.create_dataset(field_name, data=np.asarray(split[field_name], dtype=np.float32), compression="gzip")
+                group.create_dataset(
+                    field_name,
+                    data=np.asarray(split[field_name], dtype=FIELD_DTYPES[field_name]),
+                    compression="gzip",
+                )
 
     save_dataset_manifest(
         {
@@ -184,9 +205,38 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                     "geometry_seed": int(handle.attrs.get("geometry_seed", 0)),
                     "variations": int(handle.attrs.get("variations", 0)),
                     "initial_field_types": json.loads(str(handle.attrs.get("initial_field_types_json", "[]"))),
-                    "n_samples_per_circle": int(handle.attrs.get("n_samples_per_circle", 0)),
+                    "shape_types": json.loads(str(handle.attrs.get("shape_types_json", '["circle"]'))),
                     "train_fraction": float(handle.attrs.get("train_fraction", 0.0)),
                     "val_fraction": float(handle.attrs.get("val_fraction", 0.0)),
+                    "ellipse_num_a": int(handle.attrs.get("ellipse_num_a", DataConfig().ellipse_num_a)),
+                    "ellipse_variations_per_a": int(
+                        handle.attrs.get("ellipse_variations_per_a", DataConfig().ellipse_variations_per_a)
+                    ),
+                    "ellipse_axis_ratio_min": float(
+                        handle.attrs.get("ellipse_axis_ratio_min", DataConfig().ellipse_axis_ratio_min)
+                    ),
+                    "ellipse_axis_ratio_max": float(
+                        handle.attrs.get("ellipse_axis_ratio_max", DataConfig().ellipse_axis_ratio_max)
+                    ),
+                    "ellipse_rotation_min": float(
+                        handle.attrs.get("ellipse_rotation_min", DataConfig().ellipse_rotation_min)
+                    ),
+                    "ellipse_rotation_max": float(
+                        handle.attrs.get("ellipse_rotation_max", DataConfig().ellipse_rotation_max)
+                    ),
+                    "ellipse_a_min_factor": float(
+                        handle.attrs.get("ellipse_a_min_factor", DataConfig().ellipse_a_min_factor)
+                    ),
+                    "ellipse_sdf_newton_max_iter": int(
+                        handle.attrs.get("ellipse_sdf_newton_max_iter", DataConfig().ellipse_sdf_newton_max_iter)
+                    ),
+                    "ellipse_sdf_newton_tol": float(
+                        handle.attrs.get("ellipse_sdf_newton_tol", DataConfig().ellipse_sdf_newton_tol)
+                    ),
+                    "ellipse_hp_dps": int(handle.attrs.get("ellipse_hp_dps", DataConfig().ellipse_hp_dps)),
+                    "ellipse_hp_newton_max_iter": int(
+                        handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
+                    ),
                 },
                 "generation": {
                     "generation_batch_size": int(handle.attrs.get("generation_batch_size", 0)),
@@ -206,22 +256,47 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
 
     with h5py.File(h5_path, "r") as handle:
         dataset_format_version = int(handle.attrs.get("dataset_format_version", 0))
-        if dataset_format_version != DATASET_FORMAT_VERSION:
+        if dataset_format_version not in SUPPORTED_DATASET_FORMAT_VERSIONS:
             raise ValueError(
                 f"Dataset format version {dataset_format_version} is incompatible with the current stencil pipeline. "
-                f"Regenerate the HDF5 dataset so it has dataset_format_version={DATASET_FORMAT_VERSION}."
+                f"Supported versions are {sorted(SUPPORTED_DATASET_FORMAT_VERSIONS)}; "
+                f"regenerate the HDF5 dataset to get dataset_format_version={DATASET_FORMAT_VERSION}."
             )
         raw_initial_field_types = handle.attrs.get("initial_field_types_json", '["sdf", "nonsdf"]')
         if isinstance(raw_initial_field_types, bytes):
             raw_initial_field_types = raw_initial_field_types.decode("utf-8")
+        raw_shape_types = handle.attrs.get("shape_types_json", '["circle"]')
+        if isinstance(raw_shape_types, bytes):
+            raw_shape_types = raw_shape_types.decode("utf-8")
         data_config = DataConfig(
             resolutions=tuple(int(item) for item in handle["resolutions"][:]),
             geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
             variations=int(handle.attrs.get("variations", DataConfig().variations)),
             initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
-            n_samples_per_circle=int(handle.attrs.get("n_samples_per_circle", DataConfig().n_samples_per_circle)),
+            shape_types=tuple(json.loads(str(raw_shape_types))),
             train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
             val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),
+            ellipse_num_a=int(handle.attrs.get("ellipse_num_a", DataConfig().ellipse_num_a)),
+            ellipse_variations_per_a=int(
+                handle.attrs.get("ellipse_variations_per_a", DataConfig().ellipse_variations_per_a)
+            ),
+            ellipse_axis_ratio_min=float(
+                handle.attrs.get("ellipse_axis_ratio_min", DataConfig().ellipse_axis_ratio_min)
+            ),
+            ellipse_axis_ratio_max=float(
+                handle.attrs.get("ellipse_axis_ratio_max", DataConfig().ellipse_axis_ratio_max)
+            ),
+            ellipse_rotation_min=float(handle.attrs.get("ellipse_rotation_min", DataConfig().ellipse_rotation_min)),
+            ellipse_rotation_max=float(handle.attrs.get("ellipse_rotation_max", DataConfig().ellipse_rotation_max)),
+            ellipse_a_min_factor=float(handle.attrs.get("ellipse_a_min_factor", DataConfig().ellipse_a_min_factor)),
+            ellipse_sdf_newton_max_iter=int(
+                handle.attrs.get("ellipse_sdf_newton_max_iter", DataConfig().ellipse_sdf_newton_max_iter)
+            ),
+            ellipse_sdf_newton_tol=float(handle.attrs.get("ellipse_sdf_newton_tol", DataConfig().ellipse_sdf_newton_tol)),
+            ellipse_hp_dps=int(handle.attrs.get("ellipse_hp_dps", DataConfig().ellipse_hp_dps)),
+            ellipse_hp_newton_max_iter=int(
+                handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
+            ),
         )
         generation_config = normalize_generation_config(
             GenerationConfig(
@@ -240,13 +315,20 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             for name in ("train", "val", "test")
             if "split_blueprint_indices" in handle and name in handle["split_blueprint_indices"]
         }
-        splits = {
-            split_name: {
-                field_name: np.asarray(handle[split_name][field_name][:], dtype=np.float32)
+        splits: dict[str, dict[str, np.ndarray]] = {}
+        for split_name in ("train", "val", "test"):
+            if split_name not in handle:
+                continue
+            group = handle[split_name]
+            missing_fields = [field_name for field_name in FIELD_ORDER if field_name not in group]
+            if missing_fields:
+                raise ValueError(
+                    f"Split {split_name!r} in dataset {h5_path.resolve()} is missing required fields: {missing_fields}."
+                )
+            splits[split_name] = {
+                field_name: np.asarray(group[field_name][:], dtype=np.float32)
                 for field_name in FIELD_ORDER
             }
-            for split_name in ("train", "val", "test")
-        }
 
     return {
         "config": data_config,
@@ -254,6 +336,15 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
         "blueprints": blueprints,
         "split_blueprint_indices": split_blueprint_indices,
         "split_blueprint_counts": {name: len(ids) for name, ids in split_blueprint_indices.items()},
+        "split_shape_blueprint_counts": {
+            name: {
+                shape_type: int(
+                    sum(1 for idx in ids if str(blueprints[idx]["meta"].get("shape_type", "circle")) == shape_type)
+                )
+                for shape_type in sorted({str(blueprint["meta"].get("shape_type", "circle")) for blueprint in blueprints})
+            }
+            for name, ids in split_blueprint_indices.items()
+        },
         "splits": splits,
         "sizes": {name: int(split["phi9"].shape[0]) for name, split in splits.items()},
     }

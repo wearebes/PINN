@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
-#SBATCH -J stencil_hkappa
-#SBATCH -p gpu
-#SBATCH -N 1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --mem=24G
-#SBATCH -t 24:00:00
-#SBATCH -o slurm-%j.results
-#SBATCH -e slurm-%j.err
-
 set -euo pipefail
 
-module load cuda12.6
-module load gcc12
-source activate pinn
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+TRAIN_DATASET=${TRAIN_DATASET:-dataset/256.h5}
+TRAIN_MODEL=${TRAIN_MODEL:-out/base256.pt}
+TRAIN_NORM=${TRAIN_NORM:-out/base256_phi9.csv}
+FLOWER_RHO_MODEL=${FLOWER_RHO_MODEL:-256}
+FLOWER_DATA=${FLOWER_DATA:-test_data/test_FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN_rho${FLOWER_RHO_MODEL}.h5}
+USE_SWANLAB=${USE_SWANLAB:-0}
+SWANLAB_MODE=${SWANLAB_MODE:-cloud}
+SWANLAB_PROJECT=${SWANLAB_PROJECT:-PINN}
 
-python -m traingenerate.generate
+SWANLAB_ARGS=()
+if [[ "$USE_SWANLAB" == "1" ]]; then
+  SWANLAB_ARGS=(--use-swanlab --swanlab-mode "$SWANLAB_MODE" --swanlab-project "$SWANLAB_PROJECT")
+fi
 
 python -m model.train \
-  --dataset-output dataset/train_stencil_setting1.h5 \
-  --batch-size 8192 \
-  --use-swanlab \
-  --swanlab-project PINN \
-  --swanlab-experiment-name stencil-hkappa \
-  --swanlab-tags stencil,hkappa \
-  --swanlab-mode offline
+  --dataset-output "$TRAIN_DATASET" \
+  --output-model "$TRAIN_MODEL" \
+  "${SWANLAB_ARGS[@]}"
+
+python -m evaluate.split \
+  --data "$TRAIN_DATASET" \
+  --split test \
+  --model-path "$TRAIN_MODEL" \
+  --normalization-csv "$TRAIN_NORM"
+
+python -m testdata_generate.generate \
+  --rho-model "$FLOWER_RHO_MODEL" \
+  --output "$FLOWER_DATA"
+
+python -m evaluate.flower \
+  --data "$FLOWER_DATA" \
+  --model-path "$TRAIN_MODEL" \
+  --normalization-csv "$TRAIN_NORM"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -13,11 +13,27 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from testdata_generate.config import DATASET_SCHEMA_VERSION, DEFAULT_DATASET_NAME, DEFAULT_OUTPUT_DIR, TestDataConfig
-    from traingenerate.reinit import LevelSetReinitializer
+    from testdata_generate.config import (
+        DATASET_SCHEMA_VERSION,
+        DEFAULT_DATASET_NAME,
+        DEFAULT_OUTPUT_DIR,
+        TestDataConfig,
+        available_rho_models,
+        filter_scenarios_by_rho_model,
+        flower_dataset_name,
+    )
+    from .reinit import LevelSetReinitializer
 else:
-    from .config import DATASET_SCHEMA_VERSION, DEFAULT_DATASET_NAME, DEFAULT_OUTPUT_DIR, TestDataConfig
-    from traingenerate.reinit import LevelSetReinitializer
+    from .config import (
+        DATASET_SCHEMA_VERSION,
+        DEFAULT_DATASET_NAME,
+        DEFAULT_OUTPUT_DIR,
+        TestDataConfig,
+        available_rho_models,
+        filter_scenarios_by_rho_model,
+        flower_dataset_name,
+    )
+    from .reinit import LevelSetReinitializer
 
 try:
     from scipy.optimize import minimize as _scipy_minimize
@@ -220,10 +236,34 @@ def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
     }
 
 
+def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
+    if config.rho_model is None:
+        available = ", ".join(str(item) for item in available_rho_models(config.scenarios))
+        raise ValueError(
+            "TestDataConfig.rho_model must be set for resolution-specific flower generation. "
+            f"Available rho_model values: {available}."
+        )
+    filtered_scenarios = filter_scenarios_by_rho_model(config.scenarios, config.rho_model)
+    if not filtered_scenarios:
+        available = ", ".join(str(item) for item in available_rho_models(config.scenarios))
+        raise ValueError(
+            f"No flower scenarios configured for rho_model={int(config.rho_model)}. "
+            f"Available rho_model values: {available}."
+        )
+    dataset_name = config.dataset_name or flower_dataset_name(rho_model=config.rho_model)
+    return replace(
+        config,
+        rho_model=int(config.rho_model),
+        dataset_name=dataset_name,
+        scenarios=filtered_scenarios,
+    )
+
+
 def generate_test_data(config: TestDataConfig | None = None, *, output: str | Path | None = None) -> Path:
-    cfg = config or TestDataConfig()
+    cfg = _resolve_generation_config(config or TestDataConfig())
     output_path = Path(output) if output is not None else cfg.output_path()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = replace(cfg, output_dir=output_path.parent, dataset_name=output_path.name)
 
     reinitializer = LevelSetReinitializer(
         indexing="xy",
@@ -239,7 +279,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
 
     print(
         "[testdata_generate] "
-        f"mode={cfg.mode} sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
+        f"rho_model={cfg.rho_model} mode={cfg.mode} sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
         f"eps_sign_factor={cfg.eps_sign_factor} RK{cfg.time_order} WENO{cfg.space_order}"
     )
     print(f"[testdata_generate] output={output_path}")
@@ -310,6 +350,11 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
         max_abs_err = max(max_abs_err, float(err))
     if max_abs_err > 5.0e-7:
         raise ValueError(f"phi0_center formula check failed: max_abs_err={max_abs_err}.")
+    if set(np.unique(arrays["rho_model"]).tolist()) != {int(cfg.rho_model)}:
+        raise ValueError(
+            f"Generated dataset rho_model values {sorted(np.unique(arrays['rho_model']).tolist())} "
+            f"do not match requested rho_model={int(cfg.rho_model)}."
+        )
 
 
 def _write_hdf5(
@@ -332,7 +377,7 @@ def _write_hdf5(
         "stencil_encoding": cfg.stencil_encoding,
         "target_rule": cfg.target_rule,
         "method_code": cfg.method_code,
-        "output_root": str(DEFAULT_OUTPUT_DIR),
+        "output_root": str(cfg.output_dir),
         "scenarios_json": json.dumps([scenario.as_dict() for scenario in cfg.scenarios], ensure_ascii=True),
         "test_iters_json": json.dumps([int(item) for item in cfg.test_iters]),
         "sample_counts_json": json.dumps(counts, sort_keys=True),
@@ -363,17 +408,25 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate independent flower test data into test_data/.")
+    default_cfg = TestDataConfig()
+    available = ", ".join(str(item) for item in available_rho_models(default_cfg.scenarios))
+    parser = argparse.ArgumentParser(description="Generate independent flower test data into test_data/, one rho_model per file.")
+    parser.add_argument(
+        "--rho-model",
+        type=int,
+        required=True,
+        help=f"Target rho_model to generate. Available values: {available}.",
+    )
     parser.add_argument(
         "--output",
         type=str,
         default="",
-        help=f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME}.",
+        help=f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME} with the selected rho_model.",
     )
     parser.add_argument(
         "--test-iters",
         type=_parse_int_tuple,
-        default=TestDataConfig().test_iters,
+        default=default_cfg.test_iters,
         help="Comma-separated test iterations. Defaults to 1,2,...,20.",
     )
     return parser
@@ -381,7 +434,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    cfg = TestDataConfig(test_iters=tuple(sorted(set(args.test_iters))))
+    cfg = TestDataConfig(
+        rho_model=int(args.rho_model),
+        test_iters=tuple(sorted(set(args.test_iters))),
+    )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)
 
