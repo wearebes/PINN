@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 from dataclasses import asdict, is_dataclass
@@ -19,11 +19,55 @@ else:
 
 
 CHECKPOINT_FORMAT_VERSION = 1
+FEATURE_STATS_FORMAT_VERSION = 1
+DEFAULT_PCA_WHITEN_EPSILON = 1.0e-12
 
 
 def normalization_csv_path(model_path: str | Path) -> Path:
     model_path = Path(model_path)
     return model_path.with_name(f"{model_path.stem}_phi9.csv")
+
+
+def normalization_csv_candidates(model_path: str | Path) -> list[Path]:
+    model_path = Path(model_path)
+    return [
+        normalization_csv_path(model_path),
+        model_path.with_name(f"{model_path.stem}.csv"),
+        model_path.with_name(f"{model_path.stem}_phi9_normalization.csv"),
+    ]
+
+
+def feature_stats_path(model_path: str | Path) -> Path:
+    model_path = Path(model_path)
+    return model_path.with_name(f"{model_path.stem}_feature_stats.npz")
+
+
+def _as_float32_array(value: np.ndarray | list[float]) -> np.ndarray:
+    return np.asarray(value, dtype=np.float32)
+
+
+def _config_to_dict(config: Any) -> dict[str, Any]:
+    if not is_dataclass(config):
+        raise TypeError(f"Expected a dataclass config, got {type(config).__name__}.")
+    data = asdict(config)
+    for key, value in list(data.items()):
+        if isinstance(value, Path):
+            data[key] = str(value)
+    return data
+
+
+def save_phi9_normalization_csv(path: str | Path, *, mean: np.ndarray, std: np.ndarray, dataset_path: str | Path) -> Path:
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset_path = Path(dataset_path).resolve()
+    mean = _as_float32_array(mean)
+    std = _as_float32_array(std)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["phi_index", "mean", "std", "variance", "source_split", "feature_count", "dataset_path"])
+        for idx in range(9):
+            writer.writerow([idx + 1, float(mean[idx]), float(std[idx]), float(std[idx] ** 2), "train", 9, str(dataset_path)])
+    return path
 
 
 def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
@@ -79,6 +123,260 @@ def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarra
     return mean, std
 
 
+def build_legacy_feature_transform(mean: np.ndarray, std: np.ndarray, *, dataset_path: str | Path | None = None) -> dict[str, Any]:
+    return {
+        "transform_kind": "standardize",
+        "feature_version": 1,
+        "raw_feature_dim": 9,
+        "output_dim": 9,
+        "pca_enabled": False,
+        "pca_dim": 9,
+        "feature_order": "phi9",
+        "source_split": "train",
+        "dataset_path": str(Path(dataset_path).resolve()) if dataset_path is not None else "",
+        "mean": _as_float32_array(mean),
+        "std": _as_float32_array(std),
+        "components": np.zeros((0, 9), dtype=np.float32),
+        "eigenvalues": np.zeros((0,), dtype=np.float32),
+        "whiten_epsilon": float(DEFAULT_PCA_WHITEN_EPSILON),
+    }
+
+def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "transform_kind",
+        "feature_version",
+        "raw_feature_dim",
+        "output_dim",
+        "pca_enabled",
+        "pca_dim",
+        "feature_order",
+        "source_split",
+        "dataset_path",
+        "mean",
+        "std",
+        "components",
+        "eigenvalues",
+        "whiten_epsilon",
+    }
+    missing = required - set(transform.keys())
+    if missing:
+        raise ValueError(f"Feature transform is missing keys: {sorted(missing)}.")
+    out = dict(transform)
+    out["feature_version"] = int(out["feature_version"])
+    out["raw_feature_dim"] = int(out["raw_feature_dim"])
+    out["output_dim"] = int(out["output_dim"])
+    out["pca_enabled"] = bool(out["pca_enabled"])
+    out["pca_dim"] = int(out["pca_dim"])
+    out["feature_order"] = str(out["feature_order"])
+    out["source_split"] = str(out["source_split"])
+    out["dataset_path"] = str(out["dataset_path"])
+    out["transform_kind"] = str(out["transform_kind"])
+    out["whiten_epsilon"] = float(out["whiten_epsilon"])
+    out["mean"] = _as_float32_array(out["mean"])
+    out["std"] = _as_float32_array(out["std"])
+    out["components"] = np.asarray(out["components"], dtype=np.float32)
+    out["eigenvalues"] = np.asarray(out["eigenvalues"], dtype=np.float32)
+    if out["mean"].shape != (out["raw_feature_dim"],) or out["std"].shape != (out["raw_feature_dim"],):
+        raise ValueError("Feature transform mean/std shapes do not match raw_feature_dim.")
+    if np.any(out["std"] <= 0.0):
+        raise ValueError("Feature transform std must be strictly positive.")
+    if out["pca_enabled"]:
+        if out["components"].shape != (out["output_dim"], out["raw_feature_dim"]):
+            raise ValueError("Feature transform components shape does not match output_dim/raw_feature_dim.")
+        if out["eigenvalues"].shape != (out["output_dim"],):
+            raise ValueError("Feature transform eigenvalues shape does not match output_dim.")
+        if np.any(out["eigenvalues"] <= 0.0):
+            raise ValueError("Feature transform eigenvalues must be positive for whitening.")
+    else:
+        if out["output_dim"] != out["raw_feature_dim"]:
+            raise ValueError("Non-PCA transform must preserve dimensionality.")
+    return out
+
+
+def fit_feature_transform(
+    train_features: np.ndarray,
+    *,
+    feature_version: int,
+    pca_enabled: bool,
+    pca_dim: int,
+    dataset_path: str | Path,
+) -> dict[str, Any]:
+    features = np.asarray(train_features, dtype=np.float32)
+    if features.ndim != 2:
+        raise ValueError(f"Training features must have shape (N, D), got {features.shape}.")
+    if features.shape[0] == 0:
+        raise ValueError("Cannot fit feature transform on an empty training split.")
+    if np.any(~np.isfinite(features)):
+        raise ValueError("Training features contain non-finite values; cannot fit feature transform.")
+    raw_dim = int(features.shape[1])
+    mean = np.mean(features, axis=0, dtype=np.float64).astype(np.float32)
+    std = np.std(features, axis=0, dtype=np.float64).astype(np.float32)
+    std = np.where(std > 0.0, std, 1.0).astype(np.float32)
+    standardized = ((features - mean.reshape(1, raw_dim)) / std.reshape(1, raw_dim)).astype(np.float64, copy=False)
+    if int(feature_version) == 1:
+        return validate_feature_transform(
+            {
+                **build_legacy_feature_transform(mean, std, dataset_path=dataset_path),
+                "feature_version": 1,
+                "raw_feature_dim": raw_dim,
+                "output_dim": raw_dim,
+            }
+        )
+    if int(feature_version) != 2:
+        raise ValueError(f"Unsupported feature_version={feature_version}.")
+    if not bool(pca_enabled):
+        return validate_feature_transform(
+            {
+                "transform_kind": "standardize",
+                "feature_version": 2,
+                "raw_feature_dim": raw_dim,
+                "output_dim": raw_dim,
+                "pca_enabled": False,
+                "pca_dim": raw_dim,
+                "feature_order": "phi9_nx9_ny9",
+                "source_split": "train",
+                "dataset_path": str(Path(dataset_path).resolve()),
+                "mean": mean,
+                "std": std,
+                "components": np.zeros((0, raw_dim), dtype=np.float32),
+                "eigenvalues": np.zeros((0,), dtype=np.float32),
+                "whiten_epsilon": float(DEFAULT_PCA_WHITEN_EPSILON),
+            }
+        )
+    if features.shape[0] < 2:
+        raise ValueError("PCA whitening requires at least two training samples.")
+    target_dim = int(pca_dim)
+    if target_dim < 1 or target_dim > raw_dim:
+        raise ValueError(f"pca_dim must be in [1, {raw_dim}], got {target_dim}.")
+    cov = np.cov(standardized, rowvar=False, bias=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    order = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+    selected_eigenvalues = np.asarray(eigenvalues[:target_dim], dtype=np.float32)
+    selected_components = np.asarray(eigenvectors[:, :target_dim].T, dtype=np.float32)
+    if np.any(selected_eigenvalues <= 0.0):
+        raise ValueError("PCA whitening encountered non-positive eigenvalues; reduce pca_dim or inspect the dataset.")
+    return validate_feature_transform(
+        {
+            "transform_kind": "pca_whiten",
+            "feature_version": 2,
+            "raw_feature_dim": raw_dim,
+            "output_dim": target_dim,
+            "pca_enabled": True,
+            "pca_dim": target_dim,
+            "feature_order": "phi9_nx9_ny9",
+            "source_split": "train",
+            "dataset_path": str(Path(dataset_path).resolve()),
+            "mean": mean,
+            "std": std,
+            "components": selected_components,
+            "eigenvalues": selected_eigenvalues,
+            "whiten_epsilon": float(DEFAULT_PCA_WHITEN_EPSILON),
+        }
+    )
+
+def apply_feature_transform(features: np.ndarray, transform: dict[str, Any]) -> np.ndarray:
+    state = validate_feature_transform(transform)
+    values = np.asarray(features, dtype=np.float32)
+    if values.ndim != 2 or values.shape[1] != state["raw_feature_dim"]:
+        raise ValueError(
+            f"Feature matrix must have shape (N, {state['raw_feature_dim']}), got {values.shape}."
+        )
+    standardized = (values - state["mean"].reshape(1, -1)) / state["std"].reshape(1, -1)
+    if not state["pca_enabled"]:
+        return standardized.astype(np.float32, copy=False)
+    projected = standardized @ state["components"].T
+    whitened = projected / np.sqrt(state["eigenvalues"].reshape(1, -1) + state["whiten_epsilon"])
+    return whitened.astype(np.float32, copy=False)
+
+
+def save_feature_stats(path: str | Path, *, transform: dict[str, Any], dataset_path: str | Path) -> Path:
+    state = validate_feature_transform({**transform, "dataset_path": str(Path(dataset_path).resolve())})
+    output_path = Path(path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.suffix.lower() == ".csv":
+        if state["pca_enabled"] or state["raw_feature_dim"] != 9:
+            raise ValueError("CSV feature stats are only supported for legacy 9D non-PCA normalization.")
+        return save_phi9_normalization_csv(output_path, mean=state["mean"], std=state["std"], dataset_path=dataset_path)
+    np.savez(
+        output_path,
+        feature_stats_format_version=np.int32(FEATURE_STATS_FORMAT_VERSION),
+        transform_kind=np.asarray(state["transform_kind"]),
+        feature_version=np.int32(state["feature_version"]),
+        raw_feature_dim=np.int32(state["raw_feature_dim"]),
+        output_dim=np.int32(state["output_dim"]),
+        pca_enabled=np.int8(1 if state["pca_enabled"] else 0),
+        pca_dim=np.int32(state["pca_dim"]),
+        feature_order=np.asarray(state["feature_order"]),
+        source_split=np.asarray(state["source_split"]),
+        dataset_path=np.asarray(state["dataset_path"]),
+        whiten_epsilon=np.float64(state["whiten_epsilon"]),
+        mean=state["mean"],
+        std=state["std"],
+        components=state["components"],
+        eigenvalues=state["eigenvalues"],
+    )
+    return output_path
+
+
+def load_feature_transform(path: str | Path) -> dict[str, Any]:
+    feature_path = Path(path)
+    if not feature_path.exists():
+        raise FileNotFoundError(f"Feature stats not found: {feature_path.resolve()}")
+    if feature_path.suffix.lower() == ".csv":
+        mean, std = load_phi9_normalization_csv(feature_path)
+        return build_legacy_feature_transform(mean, std)
+    with np.load(feature_path, allow_pickle=False) as data:
+        version = int(data["feature_stats_format_version"])
+        if version != FEATURE_STATS_FORMAT_VERSION:
+            raise ValueError(f"Unsupported feature_stats_format_version={version} in {feature_path.resolve()}.")
+        return validate_feature_transform(
+            {
+                "transform_kind": str(data["transform_kind"].item()),
+                "feature_version": int(data["feature_version"]),
+                "raw_feature_dim": int(data["raw_feature_dim"]),
+                "output_dim": int(data["output_dim"]),
+                "pca_enabled": bool(int(data["pca_enabled"])),
+                "pca_dim": int(data["pca_dim"]),
+                "feature_order": str(data["feature_order"].item()),
+                "source_split": str(data["source_split"].item()),
+                "dataset_path": str(data["dataset_path"].item()),
+                "whiten_epsilon": float(data["whiten_epsilon"]),
+                "mean": np.asarray(data["mean"], dtype=np.float32),
+                "std": np.asarray(data["std"], dtype=np.float32),
+                "components": np.asarray(data["components"], dtype=np.float32),
+                "eigenvalues": np.asarray(data["eigenvalues"], dtype=np.float32),
+            }
+        )
+
+
+def resolve_feature_transform(
+    *,
+    model_path: str | Path,
+    explicit_path: str | Path | None,
+    checkpoint_meta: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    if explicit_path:
+        path = Path(explicit_path)
+        return load_feature_transform(path), str(path.resolve())
+    checkpoint_transform = checkpoint_meta.get("feature_transform")
+    if checkpoint_transform is not None:
+        return validate_feature_transform(checkpoint_transform), "checkpoint"
+    npz_path = feature_stats_path(model_path)
+    if npz_path.exists():
+        return load_feature_transform(npz_path), str(npz_path.resolve())
+    csv_candidates = normalization_csv_candidates(model_path)
+    for csv_path in csv_candidates:
+        if csv_path.exists():
+            return load_feature_transform(csv_path), str(csv_path.resolve())
+    checked_paths = [str(npz_path.resolve()), *(str(path.resolve()) for path in csv_candidates)]
+    raise FileNotFoundError(
+        f"No feature transform found for checkpoint {Path(model_path).resolve()}. "
+        f"Checked embedded checkpoint metadata and sidecars: {', '.join(checked_paths)}."
+    )
+
+
 def decode_phi9_to_patch(phi9: np.ndarray) -> np.ndarray:
     phi9 = np.asarray(phi9, dtype=np.float32)
     if phi9.ndim != 2 or phi9.shape[1] != 9:
@@ -117,18 +415,14 @@ def compute_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, flo
         "maxae": float(np.max(np.abs(diff))),
     }
 
-
-def _config_to_dict(config: Any) -> dict[str, Any]:
-    if not is_dataclass(config):
-        raise TypeError(f"Expected a dataclass config, got {type(config).__name__}.")
-    data = asdict(config)
-    for key, value in list(data.items()):
-        if isinstance(value, Path):
-            data[key] = str(value)
-    return data
-
-
-def save_checkpoint_bundle(model: torch.nn.Module, *, model_type: str, model_config: Any, path: str | Path) -> Path:
+def save_checkpoint_bundle(
+    model: torch.nn.Module,
+    *,
+    model_type: str,
+    model_config: Any,
+    path: str | Path,
+    feature_transform: dict[str, Any] | None = None,
+) -> Path:
     checkpoint_path = Path(path).resolve()
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -137,6 +431,8 @@ def save_checkpoint_bundle(model: torch.nn.Module, *, model_type: str, model_con
         "model_config": _config_to_dict(model_config),
         "state_dict": {key: value.detach().cpu() for key, value in model.state_dict().items()},
     }
+    if feature_transform is not None:
+        payload["feature_transform"] = validate_feature_transform(feature_transform)
     torch.save(payload, checkpoint_path)
     return checkpoint_path
 
@@ -161,6 +457,8 @@ def load_checkpoint_bundle(path: str | Path) -> dict[str, Any]:
         )
     if not isinstance(payload["state_dict"], dict):
         raise ValueError(f"Checkpoint {checkpoint_path.resolve()} has an invalid state_dict payload.")
+    if "feature_transform" in payload and payload["feature_transform"] is not None:
+        payload["feature_transform"] = validate_feature_transform(payload["feature_transform"])
     return payload
 
 
@@ -168,26 +466,28 @@ def load_model_from_checkpoint(model_path: str | Path, *, device: torch.device) 
     payload = load_checkpoint_bundle(model_path)
     model_type = str(payload["model_type"])
     model_config = dict(payload["model_config"])
-    config = create_train_config(model_type, **model_config)  # type: ignore[arg-type]
+    config = create_train_config(model_type, **model_config)
     model = create_model(config)
     model.load_state_dict(payload["state_dict"])
     model.to(device)
     model.eval()
-    return model, {"model_type": model_type, "model_config": model_config}
+    return model, {
+        "model_type": model_type,
+        "model_config": model_config,
+        "feature_transform": payload.get("feature_transform"),
+    }
 
 
 @torch.inference_mode()
 def predict_hkappa_full_batch(
     model: torch.nn.Module,
-    phi9: np.ndarray,
+    features: np.ndarray,
     *,
-    mean: np.ndarray,
-    std: np.ndarray,
+    transform: dict[str, Any],
     device: torch.device,
 ) -> np.ndarray:
-    phi9 = np.asarray(phi9, dtype=np.float32)
-    normalized = ((phi9 - mean.reshape(1, 9)) / std.reshape(1, 9)).astype(np.float32, copy=False)
-    batch = torch.from_numpy(normalized).to(device)
+    transformed = apply_feature_transform(features, transform)
+    batch = torch.from_numpy(transformed).to(device)
     prediction = model(batch).detach().cpu().numpy()
     return prediction.astype(np.float64, copy=False).reshape(-1)
 

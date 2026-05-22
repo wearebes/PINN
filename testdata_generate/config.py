@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 METHOD_CODE = "FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN"
 DEFAULT_OUTPUT_DIR = Path("test_data")
 DEFAULT_DATASET_NAME = f"test_{METHOD_CODE}_rho<RHO_MODEL>.h5"
-DATASET_SCHEMA_VERSION = 1
+DATASET_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,8 @@ class TestDataConfig:
     sampling_rule: str = "current_interface_nodes"
     stencil_encoding: str = "training_order"
     target_rule: str = "analytic_projection_current_nodes"
+    feature_version: int = 1
+    gradient_epsilon: float = 1.0e-8
     method_code: str = METHOD_CODE
     rho_model: int | None = None
     output_dir: Path = DEFAULT_OUTPUT_DIR

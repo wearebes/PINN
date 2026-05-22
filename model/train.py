@@ -1,8 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
-import csv
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -16,20 +15,39 @@ from torch import nn
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from evaluate.shared import csv_to_list, init_swanlab_run, normalization_csv_path, save_checkpoint_bundle
+    from evaluate.shared import (
+        apply_feature_transform,
+        csv_to_list,
+        feature_stats_path,
+        fit_feature_transform,
+        init_swanlab_run,
+        normalization_csv_path,
+        save_checkpoint_bundle,
+        save_feature_stats,
+    )
     from model.config import CNN_TrainConfig, MLP_TrainConfig, ModelType, create_train_config, default_dataset_path, default_output_model_path
-    from model.model import create_model, count_parameters
-    from train_generate.io import FIELD_ORDER, load_training_arrays_from_hdf5
+    from model.model import count_parameters, create_model
+    from train_generate.io import load_training_arrays_from_hdf5
 else:
-    from evaluate.shared import csv_to_list, init_swanlab_run, normalization_csv_path, save_checkpoint_bundle
+    from evaluate.shared import (
+        apply_feature_transform,
+        csv_to_list,
+        feature_stats_path,
+        fit_feature_transform,
+        init_swanlab_run,
+        normalization_csv_path,
+        save_checkpoint_bundle,
+        save_feature_stats,
+    )
     from .config import CNN_TrainConfig, MLP_TrainConfig, ModelType, create_train_config, default_dataset_path, default_output_model_path
-    from .model import create_model, count_parameters
-    from train_generate.io import FIELD_ORDER, load_training_arrays_from_hdf5
+    from .model import count_parameters, create_model
+    from train_generate.io import load_training_arrays_from_hdf5
 
 
 TRAIN_SPLIT_NAMES = ("train", "val")
+TRAINING_FIELD_NAMES = ("features", "hkappa_target")
 
-# 设置optimizer 为 Adam
+
 def create_optimizer(model: nn.Module, lr: float) -> torch.optim.Optimizer:
     return torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -55,58 +73,19 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     return unwrapped
 
 
-def compute_phi9_normalization(train_phi9: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    train_phi9 = np.asarray(train_phi9, dtype=np.float32)
-    if train_phi9.ndim != 2 or train_phi9.shape[1] != 9:
-        raise ValueError(f"Training phi9 must have shape (N, 9), got {train_phi9.shape}.")
-    if train_phi9.shape[0] == 0:
-        raise ValueError("Cannot compute phi9 normalization from an empty training split.")
-    if np.any(~np.isfinite(train_phi9)):
-        raise ValueError("Training phi9 contains non-finite values; cannot compute normalization.")
-    mean = np.mean(train_phi9, axis=0, dtype=np.float64).astype(np.float32)
-    std = np.std(train_phi9, axis=0, dtype=np.float64).astype(np.float32)
-    std = np.where(std > 0.0, std, 1.0).astype(np.float32)
-    return mean, std
-
-
-def save_phi9_normalization_csv(path: str | Path, *, mean: np.ndarray, std: np.ndarray, dataset_path: str | Path) -> Path:
-    path = Path(path).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    dataset_path = Path(dataset_path).resolve()
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["phi_index", "mean", "std", "variance", "source_split", "feature_count", "dataset_path"])
-        for idx in range(9):
-            writer.writerow([idx + 1, float(mean[idx]), float(std[idx]), float(std[idx] ** 2), "train", 9, str(dataset_path)])
-    return path
-
-
-def apply_phi9_normalization(dataset_bundle: dict[str, Any], *, mean: np.ndarray, std: np.ndarray) -> dict[str, Any]:
-    splits: dict[str, dict[str, np.ndarray]] = {}
-    for split_name, split in dataset_bundle["splits"].items():
-        splits[split_name] = {
-            "phi9": ((np.asarray(split["phi9"], dtype=np.float32) - mean) / std).astype(np.float32, copy=False),
-            "hkappa_target": np.asarray(split["hkappa_target"], dtype=np.float32),
-        }
-    return {**dataset_bundle, "splits": splits}
-
-
 def _validate_split(split_name: str, split: dict[str, Any]) -> None:
-    missing = [field_name for field_name in FIELD_ORDER if field_name not in split]
-    if missing:
-        raise ValueError(f"Split {split_name!r} is missing required fields: {missing}.")
-    sample_count = None
-    for field_name in FIELD_ORDER:
-        values = split[field_name]
-        shape = tuple(int(dim) for dim in values.shape)
-        if len(shape) < 1:
-            raise ValueError(f"Split {split_name!r} field {field_name!r} must have a batch dimension, got {shape}.")
-        if shape[0] == 0:
-            raise ValueError(f"Split {split_name!r} is empty and cannot be used for training.")
-        if sample_count is None:
-            sample_count = shape[0]
-        elif shape[0] != sample_count:
-            raise ValueError(f"Split {split_name!r} fields do not share the same first dimension.")
+    for field_name in ("phi9", "features", "hkappa_target"):
+        if field_name not in split:
+            raise ValueError(f"Split {split_name!r} is missing required field {field_name!r}.")
+    if split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9:
+        raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
+    if split["features"].ndim != 2:
+        raise ValueError(f"Split {split_name!r} features must have shape (N, D), got {split['features'].shape}.")
+    sample_count = int(split["features"].shape[0])
+    if sample_count == 0:
+        raise ValueError(f"Split {split_name!r} is empty and cannot be used for training.")
+    if int(split["phi9"].shape[0]) != sample_count or int(split["hkappa_target"].shape[0]) != sample_count:
+        raise ValueError(f"Split {split_name!r} fields do not share the same first dimension.")
 
 
 def validate_training_splits(dataset_bundle: dict[str, Any]) -> None:
@@ -115,15 +94,39 @@ def validate_training_splits(dataset_bundle: dict[str, Any]) -> None:
             raise ValueError(f"Training requires split {split_name!r}.")
         _validate_split(split_name, dataset_bundle["splits"][split_name])
 
-def build_torch_splits(dataset_bundle: dict[str, Any], *, device: torch.device) -> dict[str, dict[str, torch.Tensor]]:
-    return {
-        split_name: {field_name: torch.from_numpy(split[field_name]).to(device) for field_name in FIELD_ORDER}
-        for split_name, split in dataset_bundle["splits"].items()
-    }
 
+def transform_dataset_bundle(dataset_bundle: dict[str, Any], *, feature_transform: dict[str, Any]) -> dict[str, Any]:
+    splits: dict[str, dict[str, np.ndarray]] = {}
+    for split_name, split in dataset_bundle["splits"].items():
+        splits[split_name] = {
+            "phi9": np.asarray(split["phi9"], dtype=np.float32),
+            "features": apply_feature_transform(split["features"], feature_transform),
+            "hkappa_target": np.asarray(split["hkappa_target"], dtype=np.float32),
+        }
+    return {**dataset_bundle, "splits": splits, "sizes": {name: int(split['features'].shape[0]) for name, split in splits.items()}}
+
+
+def build_torch_splits(dataset_bundle: dict[str, Any], *, device: torch.device) -> dict[str, dict[str, torch.Tensor]]:
+    splits: dict[str, dict[str, torch.Tensor]] = {}
+    for split_name, split in dataset_bundle["splits"].items():
+        tensors: dict[str, torch.Tensor] = {}
+        for field_name in TRAINING_FIELD_NAMES:
+            arr = np.asarray(split[field_name], dtype=np.float32)
+            t = torch.from_numpy(arr)
+            if device.type == "cuda":
+                try:
+                    t = t.pin_memory()
+                except Exception:
+                    pass
+                t = t.to(device, non_blocking=True)
+            else:
+                t = t.to(device)
+            tensors[field_name] = t
+        splits[split_name] = tensors
+    return splits
 
 def split_size(split: dict[str, torch.Tensor]) -> int:
-    return int(split[FIELD_ORDER[0]].shape[0])
+    return int(split["features"].shape[0])
 
 
 def iter_split_batches(
@@ -131,17 +134,17 @@ def iter_split_batches(
     *,
     batch_size: int,
     shuffle: bool,
-) -> tuple[torch.Tensor, torch.Tensor]:
+):
     size = split_size(split)
     if shuffle:
-        indices = torch.randperm(size, device=split[FIELD_ORDER[0]].device)
+        indices = torch.randperm(size, device=split["features"].device)
         for start in range(0, size, batch_size):
             batch_indices = indices[start:start + batch_size]
-            yield split["phi9"].index_select(0, batch_indices), split["hkappa_target"].index_select(0, batch_indices)
+            yield split["features"].index_select(0, batch_indices), split["hkappa_target"].index_select(0, batch_indices)
     else:
         for start in range(0, size, batch_size):
             end = min(start + batch_size, size)
-            yield split["phi9"][start:end], split["hkappa_target"][start:end]
+            yield split["features"][start:end], split["hkappa_target"][start:end]
 
 
 def make_autocast_context(*, device: torch.device, amp_enabled: bool):
@@ -170,11 +173,11 @@ def maybe_warmup_compiled_training(
     saved_state = {key: value.detach().cpu().clone() for key, value in checkpoint_model.state_dict().items()}
     warmup_optimizer = create_optimizer(checkpoint_model, train_config.lr)
     warmup_scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
-    phi9_batch = split["phi9"][:warmup_count]
+    feature_batch = split["features"][:warmup_count]
     target_batch = split["hkappa_target"][:warmup_count]
     warmup_optimizer.zero_grad(set_to_none=True)
     with make_autocast_context(device=device, amp_enabled=amp_enabled):
-        _, loss = model.predict_and_loss(phi9_batch, target_batch)
+        _, loss = model.predict_and_loss(feature_batch, target_batch)
     if warmup_scaler.is_enabled():
         warmup_scaler.scale(loss).backward()
         warmup_scaler.step(warmup_optimizer)
@@ -199,7 +202,6 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None,
     scaler: torch.amp.GradScaler | None,
     amp_enabled: bool,
-    grad_accum_steps: int = 1,
     profile_cuda_timing: bool = False,
     phase_log_path: str | Path | None = None,
     phase_name: str | None = None,
@@ -210,40 +212,28 @@ def run_epoch(
     total_loss = torch.zeros((), device=device, dtype=torch.float32)
     total_count = 0
     phase_started = False
-    accum_count = 0
-    for phi9_batch, target_batch in iter_split_batches(split, batch_size=batch_size, shuffle=shuffle):
+    for feature_batch, target_batch in iter_split_batches(split, batch_size=batch_size, shuffle=shuffle):
         if not phase_started and phase_name is not None and epoch is not None:
             emit_phase_event(phase_log_path, f"{phase_name}_epoch_begin", epoch=int(epoch))
             phase_started = True
-        current_batch_size = int(phi9_batch.shape[0])
+        current_batch_size = int(feature_batch.shape[0])
         if training:
-            if accum_count == 0:
-                optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
         with make_autocast_context(device=device, amp_enabled=amp_enabled):
-            _, batch_loss = model.predict_and_loss(phi9_batch, target_batch)
+            _, batch_loss = model.predict_and_loss(feature_batch, target_batch)
         if training:
-            scaled_loss = batch_loss / grad_accum_steps
             if scaler is not None and scaler.is_enabled():
-                scaler.scale(scaled_loss).backward()
+                scaler.scale(batch_loss).backward()
             else:
-                scaled_loss.backward()
+                batch_loss.backward()
         total_loss = total_loss + batch_loss.detach().to(dtype=torch.float32) * current_batch_size
         total_count += current_batch_size
         if training:
-            accum_count += 1
-            if accum_count >= grad_accum_steps:
-                if scaler is not None and scaler.is_enabled():
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-                accum_count = 0
-    if training and accum_count > 0:
-        if scaler is not None and scaler.is_enabled():
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
+            if scaler is not None and scaler.is_enabled():
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
     if total_count == 0:
         raise ValueError("Encountered an empty split during training.")
     if phase_started and phase_name is not None and epoch is not None:
@@ -257,7 +247,6 @@ def run_epoch(
         )
     return float((total_loss / total_count).item())
 
-
 def train_model(
     model: nn.Module,
     *,
@@ -266,6 +255,7 @@ def train_model(
     model_type: str,
     checkpoint_path: str | Path,
     checkpoint_model: nn.Module,
+    feature_transform: dict[str, Any],
     device: torch.device,
     swanlab_run: Any | None = None,
     amp_enabled: bool = False,
@@ -289,7 +279,6 @@ def train_model(
             optimizer=optimizer,
             scaler=scaler,
             amp_enabled=amp_enabled,
-            grad_accum_steps=train_config.grad_accum_steps,
             profile_cuda_timing=train_config.profile_cuda_timing,
             phase_log_path=phase_log_path,
             phase_name="train",
@@ -304,7 +293,6 @@ def train_model(
             optimizer=None,
             scaler=None,
             amp_enabled=amp_enabled,
-            grad_accum_steps=1,
             profile_cuda_timing=train_config.profile_cuda_timing,
             phase_log_path=phase_log_path,
             phase_name="val",
@@ -324,7 +312,13 @@ def train_model(
             best_epoch = epoch
             wait = 0
             best_state = {key: value.detach().cpu().clone() for key, value in checkpoint_model.state_dict().items()}
-            save_checkpoint_bundle(checkpoint_model, model_type=model_type, model_config=train_config, path=checkpoint_path)
+            save_checkpoint_bundle(
+                checkpoint_model,
+                model_type=model_type,
+                model_config=train_config,
+                path=checkpoint_path,
+                feature_transform=feature_transform,
+            )
             emit_phase_event(
                 phase_log_path,
                 "checkpoint_saved",
@@ -340,7 +334,13 @@ def train_model(
                 break
     if best_state is not None:
         checkpoint_model.load_state_dict(best_state)
-        save_checkpoint_bundle(checkpoint_model, model_type=model_type, model_config=train_config, path=checkpoint_path)
+        save_checkpoint_bundle(
+            checkpoint_model,
+            model_type=model_type,
+            model_config=train_config,
+            path=checkpoint_path,
+            feature_transform=feature_transform,
+        )
         emit_phase_event(
             phase_log_path,
             "checkpoint_saved",
@@ -352,14 +352,18 @@ def train_model(
     return model, history
 
 
-def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int) -> None:
+def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int, feature_transform: dict[str, Any]) -> None:
     data_cfg = dataset_bundle["config"]
     generation_cfg = dataset_bundle["generation_config"]
-    print("Task: 3x3 phi stencil -> h*kappa")
+    print("Task: 3x3 stencil features -> h*kappa")
     print(f"Number of blueprints: {len(dataset_bundle['blueprints'])}")
     print(f"Shape types: {getattr(data_cfg, 'shape_types', ('circle',))}")
     print(f"Resolutions: {data_cfg.resolutions}")
     print(f"Initial field types: {data_cfg.initial_field_types}")
+    print(f"Feature version: {getattr(data_cfg, 'feature_version', 1)}")
+    print(f"Raw feature dim: {int(feature_transform['raw_feature_dim'])}")
+    print(f"Model input dim: {int(feature_transform['output_dim'])}")
+    print(f"Transform kind: {feature_transform['transform_kind']}")
     print(f"Dataset generation batch size: {generation_cfg.generation_batch_size}")
     print(f"Training batch size: {batch_size}")
     print(f"Blueprint split fractions: train={data_cfg.train_fraction}, val={data_cfg.val_fraction}, test={1.0 - data_cfg.train_fraction - data_cfg.val_fraction}")
@@ -367,21 +371,26 @@ def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int) 
         print(f"{split_name:>5s}: {split_size}")
 
 
-def build_swanlab_config(*, train_config: Any, dataset_bundle: dict[str, Any], dataset_path: str | Path, checkpoint_path: str | Path, device: torch.device, parameter_count: int, model_type: str) -> dict[str, Any]:
+def build_swanlab_config(*, train_config: Any, dataset_bundle: dict[str, Any], dataset_path: str | Path, checkpoint_path: str | Path, feature_stats_output: str | Path, feature_transform: dict[str, Any], device: torch.device, parameter_count: int, model_type: str) -> dict[str, Any]:
     config: dict[str, Any] = {
-        "task": "3x3 phi stencil -> h*kappa",
+        "task": "3x3 stencil features -> h*kappa",
         "model_type": model_type,
         "dataset_path": str(Path(dataset_path).resolve()),
         "checkpoint_path": str(Path(checkpoint_path).resolve()),
+        "feature_stats_path": str(Path(feature_stats_output).resolve()),
         "device": str(device),
         "parameter_count": int(parameter_count),
+        "transform/kind": feature_transform["transform_kind"],
+        "transform/raw_feature_dim": int(feature_transform["raw_feature_dim"]),
+        "transform/output_dim": int(feature_transform["output_dim"]),
+        "transform/pca_enabled": bool(feature_transform["pca_enabled"]),
+        "transform/pca_dim": int(feature_transform["pca_dim"]),
     }
     config.update({f"train/{key}": str(value) if isinstance(value, Path) else value for key, value in asdict(train_config).items()})
     config.update({f"data/{key}": value for key, value in asdict(dataset_bundle["config"]).items()})
     config.update({f"generation/{key}": str(value) if isinstance(value, Path) else value for key, value in asdict(dataset_bundle["generation_config"]).items()})
     config.update({f"split_sizes/{key}": int(value) for key, value in dataset_bundle.get("sizes", {}).items()})
     return config
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     mlp_defaults = MLP_TrainConfig()
@@ -390,16 +399,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-type", type=str, default="mlp", choices=["mlp", "cnn"])
     parser.add_argument("--dataset-output", type=str, default=str(default_dataset_path()))
     parser.add_argument("--output-model", type=str, default=str(default_output_model_path()))
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--hidden-units", type=int, default=mlp_defaults.hidden_units)
-    parser.add_argument("--kernel-size", type=int, default=cnn_defaults.kernel_size)
-    parser.add_argument("--padding", type=int, default=cnn_defaults.padding)
-    parser.add_argument("--activation", type=str, default=mlp_defaults.activation, choices=["relu", "tanh", "silu"])
-    parser.add_argument("--lr", type=float, default=mlp_defaults.lr)
-    parser.add_argument("--max-epochs", type=int, default=mlp_defaults.max_epochs)
-    parser.add_argument("--patience", type=int, default=mlp_defaults.patience)
-    parser.add_argument("--batch-size", type=int, default=mlp_defaults.batch_size)
+    parser.add_argument("--feature-stats", type=str, default="")
+    parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--seed", type=int, default=mlp_defaults.seed)
+    parser.add_argument("--pca-enabled", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use-swanlab", action="store_true")
     parser.add_argument("--swanlab-project", type=str, default="PINN")
     parser.add_argument("--swanlab-experiment-name", type=str, default="")
@@ -412,24 +415,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase-log-path", type=str, default="")
     parser.add_argument("--disable-amp", action="store_true")
     parser.add_argument("--disable-compile", action="store_true")
-    parser.add_argument("--compile-mode", type=str, default="none",
-                        choices=["none", "default", "reduce-overhead", "max-autotune"])
-    parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument("--compile-mode", type=str, default="reduce-overhead", choices=["none", "default", "reduce-overhead", "max-autotune"])
     parser.add_argument("--profile-cuda-timing", action="store_true")
     return parser
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
+    args = build_arg_parser().parse_args()   #传递参数
     dataset_path = Path(args.dataset_output)
-    if not dataset_path.exists():
-        raise FileNotFoundError(
-            f"Dataset file not found: {dataset_path.resolve()}\n"
-            "Generate the dataset first with `python -m train_generate.generate`."
-        )
+    
     model_type: ModelType = args.model_type  # type: ignore[assignment]
+    raw_bundle = load_training_arrays_from_hdf5(dataset_path)
+    validate_training_splits(raw_bundle)
+    dataset_feature_version = int(getattr(raw_bundle["config"], "feature_version", 1))
+    raw_feature_dim = int(raw_bundle["splits"]["train"]["features"].shape[1])
+    pca_enabled = bool(args.pca_enabled) if args.pca_enabled is not None else dataset_feature_version == 2
+    if dataset_feature_version == 1 and pca_enabled:
+        raise ValueError("feature_version=1 keeps the legacy standardized phi9 pipeline; do not enable PCA.")
+    if model_type == "cnn" and (dataset_feature_version != 1 or raw_feature_dim != 9):
+        raise ValueError("CNN is only supported for legacy feature_version=1 phi9 inputs.")
+    feature_transform = fit_feature_transform(
+        raw_bundle["splits"]["train"]["features"],
+        feature_version=dataset_feature_version,
+        pca_enabled=pca_enabled,
+        pca_dim=int(args.pca_dim),
+        dataset_path=dataset_path,
+    )
+    if args.feature_stats:
+        feature_stats_output = Path(args.feature_stats)
+    elif args.normalization_csv:
+        feature_stats_output = Path(args.normalization_csv)
+    elif dataset_feature_version == 1:
+        feature_stats_output = normalization_csv_path(args.output_model)
+    else:
+        feature_stats_output = feature_stats_path(args.output_model)
+    saved_feature_stats_path = save_feature_stats(feature_stats_output, transform=feature_transform, dataset_path=dataset_path)
+    transformed_bundle = transform_dataset_bundle(raw_bundle, feature_transform=feature_transform)
+
     overrides = {
-        "activation": args.activation,
         "lr": args.lr,
         "max_epochs": args.max_epochs,
         "patience": args.patience,
@@ -438,8 +461,12 @@ def main() -> None:
         "dataset_path": dataset_path,
         "output_model_path": Path(args.output_model),
         "compile_mode": args.compile_mode,
-        "grad_accum_steps": args.grad_accum_steps,
         "profile_cuda_timing": args.profile_cuda_timing,
+        "input_dim": int(feature_transform["output_dim"]),
+        "raw_feature_dim": raw_feature_dim,
+        "feature_version": dataset_feature_version,
+        "pca_enabled": bool(feature_transform["pca_enabled"]),
+        "pca_dim": int(feature_transform["pca_dim"]),
     }
     if model_type == "mlp":
         overrides["hidden_units"] = args.hidden_units
@@ -447,11 +474,7 @@ def main() -> None:
         overrides["kernel_size"] = args.kernel_size
         overrides["padding"] = args.padding
     train_config = create_train_config(model_type, **overrides)
-    raw_bundle = load_training_arrays_from_hdf5(dataset_path)
-    validate_training_splits(raw_bundle)
-    mean, std = compute_phi9_normalization(raw_bundle["splits"]["train"]["phi9"])
-    stats_csv_path = save_phi9_normalization_csv(normalization_csv_path(train_config.output_model_path), mean=mean, std=std, dataset_path=dataset_path)
-    normalized_bundle = apply_phi9_normalization(raw_bundle, mean=mean, std=std)
+
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     phase_log_path = Path(args.phase_log_path).resolve() if args.phase_log_path else None
     if phase_log_path is not None:
@@ -467,10 +490,16 @@ def main() -> None:
     torch.manual_seed(train_config.seed)
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
+        try:
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        except Exception:
+            pass
     amp_enabled = device.type == "cuda" and not args.disable_amp
     compile_enabled = device.type == "cuda" and not args.disable_compile and hasattr(torch, "compile")
     compile_mode = args.compile_mode if not args.disable_compile else "none"
-    bundle = {**normalized_bundle, "splits": build_torch_splits(normalized_bundle, device=device)}
+    bundle = {**transformed_bundle, "splits": build_torch_splits(transformed_bundle, device=device)}
     checkpoint_model = create_model(train_config).to(device)
     model = checkpoint_model
     if compile_enabled and compile_mode != "none":
@@ -479,9 +508,9 @@ def main() -> None:
         phase_log_path,
         "data_ready",
         device=str(device),
-        train_size=int(normalized_bundle["sizes"]["train"]),
-        val_size=int(normalized_bundle["sizes"]["val"]),
-        test_size=int(normalized_bundle["sizes"].get("test", 0)),
+        train_size=int(transformed_bundle["sizes"]["train"]),
+        val_size=int(transformed_bundle["sizes"]["val"]),
+        test_size=int(transformed_bundle["sizes"].get("test", 0)),
         batch_size=int(train_config.batch_size),
         amp_enabled=bool(amp_enabled),
         compile_enabled=bool(compile_enabled),
@@ -500,14 +529,12 @@ def main() -> None:
     print(f"Model type: {model_type}")
     print(f"Device: {device}")
     print(f"AMP enabled: {amp_enabled}")
-    print(f"Compile enabled: {compile_enabled}" + (f" (mode: {compile_mode})" if compile_enabled and compile_mode != "none" else f" (mode: {compile_mode})"))
-    print(f"Gradient accumulation steps: {train_config.grad_accum_steps}")
+    print(f"Compile enabled: {compile_enabled} (mode: {compile_mode})")
     print(f"Profile CUDA timing: {train_config.profile_cuda_timing}")
     print(f"Dataset file: {dataset_path.resolve()}")
+    print(f"Feature stats: {saved_feature_stats_path.resolve()}")
     print(f"Parameter count: {count_parameters(checkpoint_model)}")
-    describe_dataset_bundle(normalized_bundle, batch_size=train_config.batch_size)
-    print("Phi9 normalization source split: train")
-    print(f"Phi9 normalization CSV: {stats_csv_path.resolve()}")
+    describe_dataset_bundle(transformed_bundle, batch_size=train_config.batch_size, feature_transform=feature_transform)
     swanlab_run = None
     if args.use_swanlab:
         swanlab_run = init_swanlab_run(
@@ -521,9 +548,11 @@ def main() -> None:
             mode=args.swanlab_mode or None,
             config=build_swanlab_config(
                 train_config=train_config,
-                dataset_bundle=normalized_bundle,
+                dataset_bundle=transformed_bundle,
                 dataset_path=dataset_path,
                 checkpoint_path=args.output_model,
+                feature_stats_output=saved_feature_stats_path,
+                feature_transform=feature_transform,
                 device=device,
                 parameter_count=count_parameters(checkpoint_model),
                 model_type=model_type,
@@ -537,6 +566,7 @@ def main() -> None:
         model_type=model_type,
         checkpoint_path=args.output_model,
         checkpoint_model=checkpoint_model,
+        feature_transform=feature_transform,
         device=device,
         swanlab_run=swanlab_run,
         amp_enabled=amp_enabled,

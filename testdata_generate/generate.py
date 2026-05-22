@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, replace
@@ -37,8 +37,12 @@ else:
 
 try:
     from scipy.optimize import minimize as _scipy_minimize
-except Exception:  # pragma: no cover - scipy is optional for a rare fallback path.
+except Exception:
     _scipy_minimize = None
+
+
+_PHI9_ROW_OFFSETS = np.asarray([-1, 0, 1, -1, 0, 1, -1, 0, 1], dtype=np.int64)
+_PHI9_COL_OFFSETS = np.asarray([1, 1, 1, 0, 0, 0, -1, -1, -1], dtype=np.int64)
 
 
 def build_grid(L: float, N: int) -> tuple[np.ndarray, np.ndarray, float]:
@@ -74,19 +78,50 @@ def interface_indices(phi: np.ndarray) -> np.ndarray:
     return np.column_stack((rows, cols)).astype(np.int64, copy=False)
 
 
-def encode_patch_training_order(patch_2d: np.ndarray) -> np.ndarray:
-    patch = np.asarray(patch_2d, dtype=np.float64)
-    return patch[:, ::-1].T.reshape(-1)
+def extract_stencil_values(field: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    if indices.size == 0:
+        return np.zeros((0, 9), dtype=np.float32)
+    rows = indices[:, 0]
+    cols = indices[:, 1]
+    row_idx = rows[:, None] + _PHI9_ROW_OFFSETS.reshape(1, 9)
+    col_idx = cols[:, None] + _PHI9_COL_OFFSETS.reshape(1, 9)
+    return np.asarray(field[row_idx, col_idx], dtype=np.float32)
 
 
 def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    if indices.size == 0:
-        return np.zeros((0, 9), dtype=np.float32)
-    out = np.empty((indices.shape[0], 9), dtype=np.float32)
-    for n, (row, col) in enumerate(indices):
-        out[n] = encode_patch_training_order(phi[row - 1:row + 2, col - 1:col + 2])
-    return out
+    return extract_stencil_values(phi, indices)
 
+
+def central_difference_gradient(phi: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
+    phi = np.asarray(phi, dtype=np.float64)
+    h = float(h)
+    phix = np.empty_like(phi, dtype=np.float64)
+    phiy = np.empty_like(phi, dtype=np.float64)
+    phix[:, 1:-1] = (phi[:, 2:] - phi[:, :-2]) / (2.0 * h)
+    phix[:, 0] = (phi[:, 1] - phi[:, 0]) / h
+    phix[:, -1] = (phi[:, -1] - phi[:, -2]) / h
+    phiy[1:-1, :] = (phi[2:, :] - phi[:-2, :]) / (2.0 * h)
+    phiy[0, :] = (phi[1, :] - phi[0, :]) / h
+    phiy[-1, :] = (phi[-1, :] - phi[-2, :]) / h
+    return phix, phiy
+
+
+def raw_feature_dim(feature_version: int) -> int:
+    return 9 if int(feature_version) == 1 else 27
+
+
+def build_raw_features(phi: np.ndarray, indices: np.ndarray, *, h: float, feature_version: int, gradient_epsilon: float) -> tuple[np.ndarray, np.ndarray]:
+    phi9 = extract_phi9(phi, indices)
+    if int(feature_version) == 1:
+        return phi9, phi9.copy()
+    phix, phiy = central_difference_gradient(phi, h)
+    phix9 = extract_stencil_values(phix, indices)
+    phiy9 = extract_stencil_values(phiy, indices)
+    denom = np.sqrt(phix9.astype(np.float64) ** 2 + phiy9.astype(np.float64) ** 2 + float(gradient_epsilon))
+    nx9 = (phix9 / denom).astype(np.float32, copy=False)
+    ny9 = (phiy9 / denom).astype(np.float32, copy=False)
+    features = np.concatenate((phi9, nx9, ny9), axis=1).astype(np.float32, copy=False)
+    return phi9, features
 
 def find_projection_theta(
     xy: np.ndarray,
@@ -163,6 +198,7 @@ def hkappa_analytic(theta_proj: np.ndarray, h: float, a: float, b: float, p: int
 def _empty_store() -> dict[str, list[np.ndarray]]:
     return {
         "phi9": [],
+        "features": [],
         "xy": [],
         "phi0_center": [],
         "hkappa_target": [],
@@ -187,6 +223,8 @@ def _append_case_iter(
     case_id: int,
     iteration: int,
     rho_model: int,
+    feature_version: int,
+    gradient_epsilon: float,
 ) -> int:
     indices = interface_indices(phi)
     if indices.size == 0:
@@ -197,8 +235,16 @@ def _append_case_iter(
     xy = np.column_stack((X[rows, cols], Y[rows, cols])).astype(np.float32, copy=False)
     theta_proj = find_projection_theta(xy, a, b, p)
     count = indices.shape[0]
+    phi9, features = build_raw_features(
+        phi,
+        indices,
+        h=h,
+        feature_version=feature_version,
+        gradient_epsilon=gradient_epsilon,
+    )
 
-    store["phi9"].append(extract_phi9(phi, indices))
+    store["phi9"].append(phi9)
+    store["features"].append(features)
     store["xy"].append(xy)
     store["phi0_center"].append(phi0[rows, cols].astype(np.float32, copy=False))
     store["hkappa_target"].append(hkappa_analytic(theta_proj, h, a, b, p))
@@ -209,9 +255,10 @@ def _append_case_iter(
     return count
 
 
-def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
+def _concat_store(store: dict[str, list[np.ndarray]], *, feature_dim: int) -> dict[str, np.ndarray]:
     shapes = {
         "phi9": (0, 9),
+        "features": (0, feature_dim),
         "xy": (0, 2),
         "phi0_center": (0,),
         "hkappa_target": (0,),
@@ -222,6 +269,7 @@ def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
     }
     dtypes = {
         "phi9": np.float32,
+        "features": np.float32,
         "xy": np.float32,
         "phi0_center": np.float32,
         "hkappa_target": np.float32,
@@ -234,7 +282,6 @@ def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
         key: np.concatenate(values, axis=0) if values else np.zeros(shapes[key], dtype=dtypes[key])
         for key, values in store.items()
     }
-
 
 def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
     if config.rho_model is None:
@@ -254,6 +301,7 @@ def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
     return replace(
         config,
         rho_model=int(config.rho_model),
+        feature_version=int(config.feature_version),
         dataset_name=dataset_name,
         scenarios=filtered_scenarios,
     )
@@ -282,14 +330,12 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
         f"rho_model={cfg.rho_model} mode={cfg.mode} sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
         f"eps_sign_factor={cfg.eps_sign_factor} RK{cfg.time_order} WENO{cfg.space_order}"
     )
-    print(f"[testdata_generate] output={output_path}")
+    print(f"[testdata_generate] feature_version={cfg.feature_version} output={output_path}")
 
     for case_id, scenario in enumerate(cfg.scenarios):
         X, Y, h_from_grid = build_grid(scenario.L, scenario.N)
         if not np.isclose(h_from_grid, scenario.h, rtol=0.0, atol=1.0e-8):
-            print(
-                f"    using grid h={h_from_grid:.12g}; scenario h metadata={scenario.h:.12g}"
-            )
+            print(f"    using grid h={h_from_grid:.12g}; scenario h metadata={scenario.h:.12g}")
         phi0 = build_flower_phi0(X, Y, scenario.a, scenario.b, scenario.p)
         phi = phi0.astype(np.float64, copy=True)
         print(f"  case={case_id} {scenario.exp_id}")
@@ -311,26 +357,30 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 case_id=case_id,
                 iteration=iteration,
                 rho_model=scenario.rho_model,
+                feature_version=cfg.feature_version,
+                gradient_epsilon=cfg.gradient_epsilon,
             )
             counts[f"{scenario.exp_id}/iter_{iteration}"] = count
             print(f"    iter={iteration:>2d} samples={count}")
 
-    arrays = _concat_store(store)
+    arrays = _concat_store(store, feature_dim=raw_feature_dim(cfg.feature_version))
     _validate_arrays(arrays, cfg)
     _write_hdf5(output_path, arrays, cfg, counts)
-    print(f"[testdata_generate] wrote {arrays['phi9'].shape[0]} samples")
+    print(f"[testdata_generate] wrote {arrays['features'].shape[0]} samples")
     return output_path
 
 
 def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None:
-    n = arrays["phi9"].shape[0]
+    n = arrays["features"].shape[0]
     if arrays["phi9"].ndim != 2 or arrays["phi9"].shape[1] != 9:
         raise ValueError(f"phi9 must have shape (N, 9), got {arrays['phi9'].shape}.")
+    if arrays["features"].ndim != 2 or arrays["features"].shape[1] != raw_feature_dim(cfg.feature_version):
+        raise ValueError(f"features must have shape (N, {raw_feature_dim(cfg.feature_version)}), got {arrays['features'].shape}.")
     if arrays["xy"].ndim != 2 or arrays["xy"].shape[1] != 2:
         raise ValueError(f"xy must have shape (N, 2), got {arrays['xy'].shape}.")
     for key, value in arrays.items():
         if value.shape[0] != n:
-            raise ValueError(f"{key} first dimension {value.shape[0]} does not match phi9 length {n}.")
+            raise ValueError(f"{key} first dimension {value.shape[0]} does not match features length {n}.")
     if set(np.unique(arrays["case_id"]).tolist()) != set(range(len(cfg.scenarios))):
         raise ValueError("case_id does not cover all configured scenarios.")
     if set(np.unique(arrays["iter"]).tolist()) != set(int(item) for item in cfg.test_iters):
@@ -338,7 +388,6 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
     if not np.isfinite(arrays["hkappa_target"]).all():
         raise ValueError("hkappa_target contains non-finite values.")
 
-    # Check the stored center phi0 against the analytical formula at the stored center xy.
     max_abs_err = 0.0
     for case_id, scenario in enumerate(cfg.scenarios):
         mask = arrays["case_id"] == case_id
@@ -355,7 +404,6 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
             f"Generated dataset rho_model values {sorted(np.unique(arrays['rho_model']).tolist())} "
             f"do not match requested rho_model={int(cfg.rho_model)}."
         )
-
 
 def _write_hdf5(
     output_path: Path,
@@ -376,6 +424,10 @@ def _write_hdf5(
         "sampling_rule": cfg.sampling_rule,
         "stencil_encoding": cfg.stencil_encoding,
         "target_rule": cfg.target_rule,
+        "feature_version": int(cfg.feature_version),
+        "feature_dim_raw": int(raw_feature_dim(cfg.feature_version)),
+        "feature_order": "phi9" if int(cfg.feature_version) == 1 else "phi9_nx9_ny9",
+        "gradient_epsilon": float(cfg.gradient_epsilon),
         "method_code": cfg.method_code,
         "output_root": str(cfg.output_dir),
         "scenarios_json": json.dumps([scenario.as_dict() for scenario in cfg.scenarios], ensure_ascii=True),
@@ -429,6 +481,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=default_cfg.test_iters,
         help="Comma-separated test iterations. Defaults to 1,2,...,20.",
     )
+    parser.add_argument("--feature-version", type=int, choices=(1, 2), default=default_cfg.feature_version)
+    parser.add_argument("--gradient-epsilon", type=float, default=default_cfg.gradient_epsilon)
     return parser
 
 
@@ -437,6 +491,8 @@ def main() -> None:
     cfg = TestDataConfig(
         rho_model=int(args.rho_model),
         test_iters=tuple(sorted(set(args.test_iters))),
+        feature_version=int(args.feature_version),
+        gradient_epsilon=float(args.gradient_epsilon),
     )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)

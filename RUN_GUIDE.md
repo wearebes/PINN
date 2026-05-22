@@ -1,194 +1,171 @@
-# Run Guide
+﻿# Run Guide
 
-## Pipeline Summary
+This is the recommended end-to-end flow for the 256-resolution baseline.
 
-This repo keeps one supervised task:
+V1 uses the legacy `phi9` pipeline and writes a `*_phi9.csv` normalization sidecar. V2 uses the `phi9 + nx9 + ny9` feature layout, fits standardization plus optional PCA whitening, and writes a `*_feature_stats.npz` sidecar.
 
-- input: `3x3` local `phi` stencil (`phi9`)
-- output: `h*kappa`
-- loss: `MSE(hk_pred, hk_true)`
-
-Training data and flower test data are different pipelines:
-
-- training data: generated from `circle + ellipse` blueprints
-- flower data: held-out test only
-
-## 1. Generate Training Data
-
-Edit defaults in `train_generate/config.py`, then run:
+## 1. Generate V1 Training Data
 
 ```bash
-python -m train_generate.generate
+python -m train_generate.generate \
+  --resolutions 256 \
+  --geometry-seed 42 \
+  --variations 12 \
+  --initial-field-types sdf,nonsdf \
+  --augment-sign-flip \
+  --shape-types circle,ellipse \
+  --output dataset/256.h5
 ```
 
-The generated HDF5 contains `train/val/test` splits with `phi9` and `hkappa_target`.
+Outputs:
 
-## 2. Train
+- `dataset/256.h5`
+
+`feature_version=1` keeps the legacy `phi9 -> h*kappa` pipeline. Sign-flip augmentation is only active in V1.
+
+## 2. Generate V2 Training Data
 
 ```bash
-python -m model.train \
-  --dataset-output dataset/256.h5 \
-  --output-model out/base256.pt
+python -m train_generate.generate \
+  --resolutions 256 \
+  --geometry-seed 42 \
+  --variations 12 \
+  --initial-field-types sdf,nonsdf \
+  --feature-version 2 \
+  --gradient-epsilon 1e-8 \
+  --shape-types circle,ellipse \
+  --feature-stats stats/256.npz \
+  --output dataset/256_v2.h5
+
+python -m train_generate.generate \
+  --resolutions 266 \
+  --geometry-seed 42 \
+  --variations 12 \
+  --initial-field-types sdf,nonsdf \
+  --feature-version 2 \
+  --gradient-epsilon 1e-8 \
+  --feature-stats stats/266.npz \
+  --shape-types circle,ellipse \
+  --output dataset/266_v2.h5
+python -m train_generate.generate \
+  --resolutions 276 \
+  --geometry-seed 42 \
+  --variations 12 \
+  --initial-field-types sdf,nonsdf \
+  --feature-version 2 \
+  --feature-stats stats/276.npz \
+  --gradient-epsilon 1e-8 \
+  --shape-types circle,ellipse \
+  --output dataset/276_v2.h5
 ```
+Outputs:
 
-Training computes `phi9` normalization from the training split only and writes a CSV next to the checkpoint.
-With the current code path, the normalization file name is `<model_stem>_phi9.csv`.
+- `dataset/256_v2.h5`
 
-The checkpoint payload contains:
+`feature_version=2` stores raw `features` with shape `(N, 27)` in block order `phi9 + nx9 + ny9` and also keeps `phi9` for numeric baselines.
 
-- `checkpoint_format_version`
-- `model_type`
-- `model_config`
-- `state_dict`
-
-If you want SwanLab logging during training:
-
+## 3. Train V1
 ```bash
 /usr/bin/time -p python -m model.train \
-  --dataset-output dataset/256.h5 \
-  --output-model out/base256.pt \
+  --dataset-output dataset/266.h5 \
+  --output-model out/baseline_266.pt \
+  --normalization-csv out/baseline_266.csv \
   --use-swanlab \
-  --swanlab-mode cloud \
   --swanlab-project PINN \
-  --swanlab-experiment-name base256
+  --swanlab-experiment-name baseline_266 \
+  --swanlab-tags baseline
+
+/usr/bin/time -p python -m model.train \
+  --dataset-output dataset/276.h5 \
+  --output-model out/baseline_276.pt \
+  --normalization-csv out/baseline_276.csv \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name baseline_276 \
+  --swanlab-tags baseline
+
+## 4. Train V2
+```bash
+/usr/bin/time -p python -m model.train \
+  --dataset-output dataset/256_v2.h5 \
+  --output-model out/baseline_256_v2.pt \
+  --feature-stats out/baseline_256_v2_feature_stats.npz \
+  --pca-enabled \
+  --pca-dim 18 \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name baseline-256-v2
 ```
 
-## 3. Evaluate Train/Val/Test Splits
+V2 fits standardization + PCA whitening on the train split only, saves the transform into the checkpoint, and also writes the sidecar `.npz` file.
+
+## 5. Evaluate Train/Val/Test Split
+
 
 ```bash
 python -m evaluate.split \
-  --data dataset/256.h5 \
+  --data dataset/256_v2.h5 \
   --split test \
-  --model-path out/base256.pt \
-  --normalization-csv out/base256_phi9.csv
+  --model-path out/baseline_256_v2.pt \
+  --feature-stats out/baseline_256_v2_feature_stats.npz \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name split-test-256-v2
 ```
 
-The split evaluator reports:
+## 6. Generate Flower Test Data
 
-- `numeric_vs_analytic`
-- `model_vs_analytic`
-- `model_vs_numeric`
+V1 example:
 
-Optional SwanLab logging is available through the same `--use-swanlab` and `--swanlab-*` flags.
-
-## 4. Flower Function Construction
-
-Flower testing is a separate held-out pipeline under `testdata_generate/`.
-It does not contribute training samples.
-
-The analytical flower initial field is:
-
-```text
-phi0(x, y) = sqrt(x^2 + y^2) - a * cos(p * theta) - b
-theta = atan2(y, x)
+```bash
+python -m testdata_generate.generate \
+  --rho-model 128 \
+  --feature-version 1 \
+  --output test_data/rho128_v1.h5
 ```
 
-For each configured flower scenario:
 
-1. Build the analytical `phi0`.
-2. Reinitialize it step by step with the configured numerical method.
-3. At each saved iteration, find the current interface nodes from sign changes of the current `phi`.
-4. Extract a `3x3` stencil around each current interface node and encode it as `phi9`.
-5. Project the current node coordinates back to the analytical flower curve.
-6. Compute analytical `h*kappa` on that projected point and store it as `hkappa_target`.
 
-The default flower test configuration is encoded in the dataset file name:
-
-- `DynSign`: dynamic sign field during reinitialization
-- `CFL0.5`
-- `EPS2.5`
-- `RK3`
-- `WENO5`
-- `CIN`: current-interface-node sampling
-- `ST9`: `3x3` stencil encoded as `phi9`
-- `APCN`: analytic projection of current nodes
-
-## 5. Generate Flower Test Data
-
-Generate one flower HDF5 per `rho_model`, and pass that file explicitly when you evaluate.
-The `rho256` example is:
+V2 example:
 
 ```bash
 python -m testdata_generate.generate \
   --rho-model 256 \
-  --output test_data/test_FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN_rho256.h5
+  --feature-version 2 \
+  --output test_data/test_flower_rho256_v2.h5
 ```
 
-This writes a flat HDF5 under `test_data/` with fields:
+Outputs:
 
-- `phi9`
-- `xy`
-- `phi0_center`
-- `hkappa_target`
-- `case_id`
-- `iter`
-- `rho_model`
-- `h`
+- `test_data/test_flower_rho256_v2.h5`
 
-Each file keeps both `smooth` and `acute` flower cases for the selected resolution.
-
-## 6. What The Model Is Actually Being Tested On
-
-The model under test is still the trained `phi9 -> h*kappa` predictor from the supervised training pipeline.
-
-Flower evaluation feeds that model with `phi9` sampled from reinitialized flower interfaces.
-The truth target is always the analytical `hkappa_target` obtained by projection back to the analytical flower curve.
-
-The evaluator also computes a numeric baseline from the same `phi9` using central differences.
-
-So flower testing compares three objects:
-
-- analytical truth: `hkappa_target`
-- numeric baseline from `phi9`
-- model prediction from `phi9`
+This generates the flower test set for the 256-resolution model. If you want a different resolution, change `--rho-model` and use the matching model/data pair everywhere else.
 
 ## 7. Evaluate Flower Test Data
 
 ```bash
 python -m evaluate.flower \
-  --data test_data/test_FP0_DynSign_CFL0.5_EPS2.5_RK3_WENO5_CIN_ST9_APCN_rho256.h5 \
-  --model-path out/base256.pt \
-  --normalization-csv out/base256_phi9.csv
+  --data test_data/test_flower_rho256_v2.h5 \
+  --model-path out/baseline_256_v2.pt \
+  --feature-stats out/baseline_256_v2_feature_stats.npz \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name flower-rho256-v2
 ```
 
-The flower evaluator prints:
+V1 example:
 
-- overall metrics
-- grouped metrics by `iter`
-- grouped metrics by `case_id`
-- grouped metrics by `rho_model`
+```bash
+python -m evaluate.flower \
+  --data test_data/test_flower_rho256_v1.h5 \
+  --model-path out/baseline_256.pt \
+  --normalization-csv out/baseline_256_phi9.csv \
+  --use-swanlab \
+  --swanlab-project PINN \
+  --swanlab-experiment-name flower-rho256 \
+  --swanlab-tag baseline
+```
 
-## 8. How To Read Flower Outputs
+If you are evaluating a legacy V1 checkpoint, replace the model and data paths accordingly and use `--normalization-csv out/baseline_256_phi9.csv` instead of `--feature-stats`.
 
-The main question is not "did one scalar pass a threshold?".
-The main question is whether the model is closer to the analytical `h*kappa` than the numeric baseline, and where that is true or false.
-
-Treat these as the primary comparisons:
-
-- `numeric_vs_analytic`
-- `model_vs_analytic`
-
-Treat this as an auxiliary comparison:
-
-- `model_vs_numeric`
-
-Use the following metrics on the two primary comparisons:
-
-- `MSE`
-- `MAE`
-- `MaxAE`
-
-Interpretation:
-
-- `MSE`: average squared error, sensitive to larger deviations
-- `MAE`: average absolute error, easier to compare across cases
-- `MaxAE`: worst-point absolute error, used to catch localized failures hidden by averages
-
-The practical reading order is:
-
-1. Compare `model_vs_analytic` against `numeric_vs_analytic` in the overall table.
-2. Check `by_iter` to see whether the model stays better or worse as reinitialization evolves.
-3. Check `by_case_id` to see whether the behavior differs between `smooth` and `acute` flowers.
-4. Use `MaxAE` to detect whether a seemingly good average hides a few bad interface points.
-
-For another resolution, regenerate the flower HDF5 with the matching `--rho-model`, then pass that file together with the corresponding model checkpoint and normalization CSV.
+For SwanLab, the flower evaluator currently logs the overall metrics only, so the plot view will show the global numeric/model comparison series. The per-iter, per-case, and per-rho breakdowns are printed to the console, not logged as separate SwanLab series.

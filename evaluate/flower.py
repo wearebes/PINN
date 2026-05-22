@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any
 
 import h5py
@@ -15,33 +17,255 @@ if __package__ in (None, ""):
     from evaluate.shared import (
         central_difference_hkappa_from_phi9,
         compute_metrics,
-        group_metric_rows,
         csv_to_list,
+        group_metric_rows,
         init_swanlab_run,
         load_model_from_checkpoint,
-        load_phi9_normalization_csv,
-        normalization_csv_path,
         predict_hkappa_full_batch,
+        resolve_feature_transform,
     )
     from model.config import default_output_model_path
+    from testdata_generate.generate import find_projection_theta
 else:
     from .shared import (
         central_difference_hkappa_from_phi9,
         compute_metrics,
-        group_metric_rows,
         csv_to_list,
+        group_metric_rows,
         init_swanlab_run,
         load_model_from_checkpoint,
-        load_phi9_normalization_csv,
-        normalization_csv_path,
         predict_hkappa_full_batch,
+        resolve_feature_transform,
     )
     from model.config import default_output_model_path
+    from testdata_generate.generate import find_projection_theta
 
 
-REQUIRED_FIELDS = ("phi9", "hkappa_target", "case_id", "iter", "rho_model", "h")
+REQUIRED_FIELDS = ("phi9", "xy", "hkappa_target", "case_id", "iter", "rho_model", "h")
 PRIMARY_COMPARISONS = ("numeric_vs_analytic", "model_vs_analytic")
 AUXILIARY_COMPARISONS = ("model_vs_numeric",)
+
+
+def _decode_json_attr(attrs: dict[str, Any], key: str) -> Any | None:
+    raw = attrs.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    return json.loads(str(raw))
+
+
+def _metric_summary(metric: dict[str, float]) -> dict[str, float]:
+    mse = float(metric["mse"])
+    return {
+        "mse": mse,
+        "rmse": float(math.sqrt(mse)),
+        "mae": float(metric["mae"]),
+        "max_abs_err": float(metric["maxae"]),
+    }
+
+
+def _case_sort_key(case_entry: dict[str, Any]) -> tuple[str, int, int]:
+    return (str(case_entry["case_label"]), int(case_entry["iter"]), int(case_entry["case_id"]))
+
+
+def _sanitize_name(raw: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(raw))
+
+
+def _render_representative_curve(case_entry: dict[str, Any]) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    theta = np.asarray(case_entry["theta"], dtype=np.float64)
+    pred_hkappa = np.asarray(case_entry["pred_hkappa"], dtype=np.float64)
+    true_hkappa = np.asarray(case_entry["true_hkappa"], dtype=np.float64)
+    abs_err = np.asarray(case_entry["abs_err"], dtype=np.float64)
+    metrics = case_entry["summary"]
+
+    output_dir = Path(tempfile.mkdtemp(prefix="flower_eval_curve_"))
+    output_path = output_dir / f"{_sanitize_name(case_entry['case_key'])}.png"
+
+    fig, axes = plt.subplots(2, 1, figsize=(10.0, 7.0), sharex=True, constrained_layout=True)
+    axes[0].plot(theta, pred_hkappa, label="pred_hkappa", linewidth=1.6)
+    axes[0].plot(theta, true_hkappa, label="true_hkappa", linewidth=1.6)
+    axes[0].set_ylabel("h*kappa")
+    axes[0].legend(loc="best")
+    axes[0].grid(True, alpha=0.25)
+
+    axes[1].plot(theta, abs_err, color="tab:red", label="abs_err", linewidth=1.6)
+    axes[1].set_xlabel("theta")
+    axes[1].set_ylabel("|pred-true|")
+    axes[1].legend(loc="best")
+    axes[1].grid(True, alpha=0.25)
+
+    fig.suptitle(
+        f"{case_entry['case_key']} | RMSE={metrics['rmse']:.6e} | "
+        f"MAE={metrics['mae']:.6e} | MaxAE={metrics['max_abs_err']:.6e}"
+    )
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def _build_swanlab_image(swanlab_module: Any, image_path: Path) -> Any:
+    last_error: Exception | None = None
+    constructor_candidates: list[tuple[Any, str]] = []
+    if hasattr(swanlab_module, "Image"):
+        constructor_candidates.append((getattr(swanlab_module, "Image"), str(image_path)))
+    media_namespace = getattr(swanlab_module, "media", None)
+    if media_namespace is not None and hasattr(media_namespace, "Image"):
+        constructor_candidates.append((getattr(media_namespace, "Image"), str(image_path)))
+    data_namespace = getattr(swanlab_module, "data", None)
+    if data_namespace is not None and hasattr(data_namespace, "Image"):
+        constructor_candidates.append((getattr(data_namespace, "Image"), str(image_path)))
+    for constructor, value in constructor_candidates:
+        try:
+            return constructor(value)
+        except Exception as exc:  # pragma: no cover - defensive SDK fallback
+            last_error = exc
+    if last_error is not None:
+        raise RuntimeError(f"Unable to construct a SwanLab image object for {image_path}: {last_error}") from last_error
+    raise RuntimeError("The installed SwanLab SDK does not expose an Image constructor.")
+
+
+def _build_case_summary_table_payload(
+    swanlab_module: Any,
+    case_rows: list[dict[str, Any]],
+    failed_case_slices: list[dict[str, Any]],
+) -> Any:
+    rows: list[list[Any]] = [[
+        "rank",
+        "case_key",
+        "case_id",
+        "case_label",
+        "iter",
+        "sample_count",
+        "rmse",
+        "mae",
+        "max_abs_err",
+        "numeric_rmse",
+        "numeric_mae",
+        "numeric_max_abs_err",
+    ]]
+    sorted_rows = sorted(case_rows, key=lambda row: (float(row["summary"]["mae"]), _case_sort_key(row)))
+    for rank, row in enumerate(sorted_rows, start=1):
+        summary = row["summary"]
+        numeric_summary = row["numeric_summary"]
+        rows.append([
+            int(rank),
+            str(row["case_key"]),
+            int(row["case_id"]),
+            str(row["case_label"]),
+            int(row["iter"]),
+            int(row["sample_count"]),
+            float(summary["rmse"]),
+            float(summary["mae"]),
+            float(summary["max_abs_err"]),
+            float(numeric_summary["rmse"]),
+            float(numeric_summary["mae"]),
+            float(numeric_summary["max_abs_err"]),
+        ])
+    if failed_case_slices:
+        rows.append(["-", "FAILED_CASE_SLICES", "-", "-", "-", int(len(failed_case_slices)), "-", "-", "-", "-", "-", "-"])
+        for failed in failed_case_slices:
+            rows.append([
+                "-",
+                str(failed["case_key"]),
+                int(failed["case_id"]),
+                str(failed["case_label"]),
+                int(failed["iter"]),
+                0,
+                str(failed["reason"]),
+                "",
+                "",
+                "",
+                "",
+                "",
+            ])
+    echarts_namespace = getattr(swanlab_module, "echarts", None)
+    if echarts_namespace is not None and hasattr(echarts_namespace, "table"):
+        return echarts_namespace.table(rows)
+    text_type = getattr(swanlab_module, "Text", None)
+    if text_type is not None:
+        return text_type("\n".join(" | ".join(str(item) for item in row) for row in rows))
+    return rows
+
+
+def _build_case_curve_row(
+    *,
+    case_id: int,
+    iteration: int,
+    case_label: str,
+    scenario: dict[str, Any],
+    xy: np.ndarray,
+    prediction: np.ndarray,
+    target: np.ndarray,
+    numeric: np.ndarray,
+) -> dict[str, Any]:
+    if xy.ndim != 2 or xy.shape[1] != 2:
+        raise ValueError(f"Expected xy with shape (N, 2), got {xy.shape}.")
+    if prediction.shape[0] == 0:
+        raise ValueError("Case slice is empty.")
+    theta = find_projection_theta(
+        np.asarray(xy, dtype=np.float64),
+        float(scenario["a"]),
+        float(scenario["b"]),
+        int(scenario["p"]),
+    )
+    if theta.shape[0] != prediction.shape[0]:
+        raise ValueError("theta length does not match prediction length.")
+    order = np.argsort(theta, kind="mergesort")
+    theta_sorted = np.asarray(theta[order], dtype=np.float64)
+    pred_sorted = np.asarray(prediction[order], dtype=np.float64)
+    target_sorted = np.asarray(target[order], dtype=np.float64)
+    numeric_sorted = np.asarray(numeric[order], dtype=np.float64)
+    abs_err = np.abs(pred_sorted - target_sorted)
+    model_vs_analytic = compute_metrics(pred_sorted, target_sorted)
+    numeric_vs_analytic = compute_metrics(numeric_sorted, target_sorted)
+    model_vs_numeric = compute_metrics(pred_sorted, numeric_sorted)
+    return {
+        "case_id": int(case_id),
+        "case_label": str(case_label),
+        "iter": int(iteration),
+        "case_key": f"{case_label}/iter_{int(iteration)}",
+        "sample_count": int(theta_sorted.shape[0]),
+        "theta": theta_sorted,
+        "pred_hkappa": pred_sorted,
+        "true_hkappa": target_sorted,
+        "numeric_hkappa": numeric_sorted,
+        "abs_err": abs_err,
+        "summary": _metric_summary(model_vs_analytic),
+        "numeric_summary": _metric_summary(numeric_vs_analytic),
+        "model_vs_analytic": model_vs_analytic,
+        "numeric_vs_analytic": numeric_vs_analytic,
+        "model_vs_numeric": model_vs_numeric,
+    }
+
+
+def _select_representative_case(case_rows: list[dict[str, Any]], preferred_case_id: str | None) -> dict[str, Any]:
+    ordered_rows = sorted(case_rows, key=_case_sort_key)
+    if not ordered_rows:
+        raise ValueError("No flower case slices are available for representative visualization.")
+    if not preferred_case_id:
+        return ordered_rows[0]
+    target = str(preferred_case_id).strip()
+    if not target:
+        return ordered_rows[0]
+    numeric_target = int(target) if target.isdigit() else None
+    matches = [
+        row
+        for row in ordered_rows
+        if row["case_key"] == target
+        or row["case_label"] == target
+        or (numeric_target is not None and int(row["case_id"]) == numeric_target)
+    ]
+    if matches:
+        return matches[0]
+    available = ", ".join(row["case_key"] for row in ordered_rows)
+    raise ValueError(f"Representative case {target!r} was not found. Available case slices: {available}.")
 
 
 def load_flower_dataset(path: str | Path) -> dict[str, Any]:
@@ -59,8 +283,11 @@ def load_flower_dataset(path: str | Path) -> dict[str, Any]:
         arrays = {name: np.asarray(handle[name][:]) for name in handle.keys()}
         attrs = {key: handle.attrs[key] for key in handle.attrs.keys()}
     phi9 = np.asarray(arrays["phi9"], dtype=np.float32)
+    features = np.asarray(arrays.get("features", arrays["phi9"]), dtype=np.float32)
     if phi9.ndim != 2 or phi9.shape[1] != 9:
         raise ValueError(f"Flower dataset phi9 must have shape (N, 9), got {phi9.shape}.")
+    if features.ndim != 2:
+        raise ValueError(f"Flower dataset features must have shape (N, D), got {features.shape}.")
     n = int(phi9.shape[0])
     if n == 0:
         raise ValueError(f"Flower dataset {dataset_path.resolve()} is empty.")
@@ -68,40 +295,117 @@ def load_flower_dataset(path: str | Path) -> dict[str, Any]:
         if int(np.asarray(arrays[name]).shape[0]) != n:
             raise ValueError(f"Field {name!r} first dimension does not match phi9 length {n}.")
     case_label_map: dict[int, str] = {}
-    if "scenarios_json" in attrs:
-        raw = attrs["scenarios_json"]
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        for idx, scenario in enumerate(json.loads(str(raw))):
-            case_label_map[idx] = str(scenario.get("exp_id", idx))
+    scenario_map: dict[int, dict[str, Any]] = {}
+    scenarios = _decode_json_attr(attrs, "scenarios_json") or []
+    for idx, scenario in enumerate(scenarios):
+        scenario_map[idx] = dict(scenario)
+        case_label_map[idx] = str(scenario.get("exp_id", idx))
+    arrays["features"] = features
     return {
         "dataset_path": str(dataset_path.resolve()),
         "arrays": arrays,
         "attrs": attrs,
         "case_label_map": case_label_map,
+        "scenario_map": scenario_map,
         "rho_models": tuple(sorted(int(item) for item in np.unique(np.asarray(arrays["rho_model"]).reshape(-1)))),
     }
 
 
-def evaluate_flower(*, dataset_path: str | Path, model_path: str | Path, normalization_path: str | Path, device: torch.device) -> dict[str, Any]:
+def evaluate_flower(
+    *,
+    dataset_path: str | Path,
+    model_path: str | Path,
+    feature_stats_path: str | Path | None,
+    device: torch.device,
+    representative_case_id: str | None = None,
+) -> dict[str, Any]:
     bundle = load_flower_dataset(dataset_path)
     arrays = bundle["arrays"]
     phi9 = np.asarray(arrays["phi9"], dtype=np.float32)
+    features = np.asarray(arrays["features"], dtype=np.float32)
+    xy = np.asarray(arrays["xy"], dtype=np.float64)
     hkappa_target = np.asarray(arrays["hkappa_target"], dtype=np.float64).reshape(-1)
-    mean, std = load_phi9_normalization_csv(normalization_path)
+    case_ids = np.asarray(arrays["case_id"]).reshape(-1)
+    iterations = np.asarray(arrays["iter"]).reshape(-1)
     model, checkpoint_meta = load_model_from_checkpoint(model_path, device=device)
+    feature_transform, feature_stats_source = resolve_feature_transform(
+        model_path=model_path,
+        explicit_path=feature_stats_path,
+        checkpoint_meta=checkpoint_meta,
+    )
     numeric = central_difference_hkappa_from_phi9(phi9)
-    prediction = predict_hkappa_full_batch(model, phi9, mean=mean, std=std, device=device)
+    prediction = predict_hkappa_full_batch(model, features, transform=feature_transform, device=device)
+
+    case_rows: list[dict[str, Any]] = []
+    failed_case_slices: list[dict[str, Any]] = []
+    for case_id in sorted(int(item) for item in np.unique(case_ids)):
+        case_mask = case_ids == case_id
+        case_label = bundle["case_label_map"].get(case_id, str(case_id))
+        scenario = bundle["scenario_map"].get(case_id)
+        if scenario is None:
+            failed_case_slices.append(
+                {
+                    "case_id": int(case_id),
+                    "case_label": str(case_label),
+                    "iter": -1,
+                    "case_key": f"{case_label}/iter_unknown",
+                    "reason": "scenario metadata missing from dataset attrs.scenarios_json",
+                }
+            )
+            continue
+        for iteration in sorted(int(item) for item in np.unique(iterations[case_mask])):
+            mask = case_mask & (iterations == iteration)
+            try:
+                case_rows.append(
+                    _build_case_curve_row(
+                        case_id=case_id,
+                        iteration=iteration,
+                        case_label=case_label,
+                        scenario=scenario,
+                        xy=xy[mask],
+                        prediction=prediction[mask],
+                        target=hkappa_target[mask],
+                        numeric=numeric[mask],
+                    )
+                )
+            except Exception as exc:
+                failed_case_slices.append(
+                    {
+                        "case_id": int(case_id),
+                        "case_label": str(case_label),
+                        "iter": int(iteration),
+                        "case_key": f"{case_label}/iter_{int(iteration)}",
+                        "reason": str(exc),
+                    }
+                )
+    if not case_rows:
+        raise ValueError("Flower evaluation did not produce any valid case slices.")
+
+    numeric_vs_analytic = compute_metrics(numeric, hkappa_target)
+    model_vs_analytic = compute_metrics(prediction, hkappa_target)
+    model_vs_numeric = compute_metrics(prediction, numeric)
+    representative_case = _select_representative_case(case_rows, representative_case_id)
+
     return {
         "dataset_path": bundle["dataset_path"],
         "sample_count": int(phi9.shape[0]),
         "rho_models": bundle["rho_models"],
         "model_path": str(Path(model_path).resolve()),
-        "normalization_path": str(Path(normalization_path).resolve()),
+        "feature_stats_source": feature_stats_source,
         "model_type": checkpoint_meta["model_type"],
-        "numeric_vs_analytic": compute_metrics(numeric, hkappa_target),
-        "model_vs_analytic": compute_metrics(prediction, hkappa_target),
-        "model_vs_numeric": compute_metrics(prediction, numeric),
+        "feature_version": int(feature_transform["feature_version"]),
+        "raw_feature_dim": int(feature_transform["raw_feature_dim"]),
+        "model_input_dim": int(feature_transform["output_dim"]),
+        "summary": _metric_summary(model_vs_analytic),
+        "numeric_summary": _metric_summary(numeric_vs_analytic),
+        "model_vs_numeric_summary": _metric_summary(model_vs_numeric),
+        "numeric_vs_analytic": numeric_vs_analytic,
+        "model_vs_analytic": model_vs_analytic,
+        "model_vs_numeric": model_vs_numeric,
+        "cases": case_rows,
+        "representative_case": representative_case,
+        "failed_case_slices": failed_case_slices,
+        "failed_case_count": int(len(failed_case_slices)),
         "by_iter": group_metric_rows(
             labels=np.asarray(arrays["iter"]),
             prediction=prediction,
@@ -150,7 +454,7 @@ def _print_grouped_rows(title: str, rows: list[dict[str, Any]]) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     default_model = default_output_model_path()
     parser = argparse.ArgumentParser(
-        description="Evaluate a resolution-specific flower test_data HDF5 with the trained 3x3 phi stencil -> h*kappa model."
+        description="Evaluate a resolution-specific flower test_data HDF5 with the trained 3x3 stencil feature -> h*kappa model."
     )
     parser.add_argument(
         "--data",
@@ -159,8 +463,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to a flower HDF5 generated for the target model's rho_model. Pass it explicitly; the evaluator does not infer it.",
     )
     parser.add_argument("--model-path", type=str, default=str(default_model))
-    parser.add_argument("--normalization-csv", type=str, default=str(normalization_csv_path(default_model)))
+    parser.add_argument("--feature-stats", type=str, default="")
+    parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--device", type=str, default="")
+    parser.add_argument(
+        "--representative-case-id",
+        type=str,
+        default="",
+        help="Optional case selector for the SwanLab representative curve. Accepts case_id, exp_id, or case_key like smooth_256/iter_1.",
+    )
     parser.add_argument("--use-swanlab", action="store_true")
     parser.add_argument("--swanlab-project", type=str, default="PINN")
     parser.add_argument("--swanlab-experiment-name", type=str, default="")
@@ -176,20 +487,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    feature_stats_arg = args.feature_stats or args.normalization_csv or None
     result = evaluate_flower(
         dataset_path=args.data,
         model_path=args.model_path,
-        normalization_path=args.normalization_csv,
+        feature_stats_path=feature_stats_arg,
         device=device,
+        representative_case_id=args.representative_case_id or None,
     )
-    print("Task: flower test_data evaluation for 3x3 phi stencil -> h*kappa")
+    print("Task: flower test_data evaluation for 3x3 stencil features -> h*kappa")
     print(f"Dataset file: {result['dataset_path']}")
     print(f"Samples: {result['sample_count']}")
     print(f"Dataset rho_model values: {', '.join(str(item) for item in result['rho_models'])}")
     print(f"Checkpoint: {result['model_path']}")
-    print(f"Normalization CSV: {result['normalization_path']}")
+    print(f"Feature stats source: {result['feature_stats_source']}")
     print(f"Model type: {result['model_type']}")
+    print(f"Feature version: {result['feature_version']}")
+    print(f"Raw feature dim: {result['raw_feature_dim']}")
+    print(f"Model input dim: {result['model_input_dim']}")
     print(f"Device: {device}")
+    print(
+        "Flower summary (model vs analytic): "
+        f"RMSE={result['summary']['rmse']:.6e} | "
+        f"MAE={result['summary']['mae']:.6e} | "
+        f"MaxAE={result['summary']['max_abs_err']:.6e}"
+    )
+    print(
+        "Representative case slice: "
+        f"{result['representative_case']['case_key']} "
+        f"(samples={result['representative_case']['sample_count']})"
+    )
+    print(f"Failed case slices: {result['failed_case_count']}")
     print("Primary comparisons against analytic h*kappa:")
     for metric_name in PRIMARY_COMPARISONS:
         metric = result[metric_name]
@@ -202,6 +530,10 @@ def main() -> None:
     _print_grouped_rows("By case_id:", result["by_case_id"])
     _print_grouped_rows("By rho_model:", result["by_rho_model"])
     if args.use_swanlab:
+        try:
+            import swanlab
+        except ImportError as exc:
+            raise ImportError("SwanLab logging was requested, but `swanlab` is not installed.") from exc
         run = init_swanlab_run(
             project=args.swanlab_project or None,
             experiment_name=args.swanlab_experiment_name or None,
@@ -216,21 +548,34 @@ def main() -> None:
                 "dataset_path": result["dataset_path"],
                 "rho_models": list(result["rho_models"]),
                 "model_path": result["model_path"],
-                "normalization_path": result["normalization_path"],
+                "feature_stats_source": result["feature_stats_source"],
                 "model_type": result["model_type"],
                 "sample_count": result["sample_count"],
+                "representative_case": result["representative_case"]["case_key"],
                 "device": str(device),
             },
         )
+        representative_curve_path = _render_representative_curve(result["representative_case"])
         run.log({
-            "eval/numeric_vs_analytic_mse": result["numeric_vs_analytic"]["mse"],
-            "eval/numeric_vs_analytic_mae": result["numeric_vs_analytic"]["mae"],
-            "eval/numeric_vs_analytic_maxae": result["numeric_vs_analytic"]["maxae"],
-            "eval/model_vs_analytic_mse": result["model_vs_analytic"]["mse"],
-            "eval/model_vs_analytic_mae": result["model_vs_analytic"]["mae"],
-            "eval/model_vs_analytic_maxae": result["model_vs_analytic"]["maxae"],
-            "eval/model_vs_numeric_mse": result["model_vs_numeric"]["mse"],
-            "eval/model_vs_numeric_mae": result["model_vs_numeric"]["mae"],
+            "flower_eval/mse": result["summary"]["mse"],
+            "flower_eval/rmse": result["summary"]["rmse"],
+            "flower_eval/mae": result["summary"]["mae"],
+            "flower_eval/max_abs_err": result["summary"]["max_abs_err"],
+            "flower_eval/numeric_mse": result["numeric_summary"]["mse"],
+            "flower_eval/numeric_rmse": result["numeric_summary"]["rmse"],
+            "flower_eval/numeric_mae": result["numeric_summary"]["mae"],
+            "flower_eval/numeric_max_abs_err": result["numeric_summary"]["max_abs_err"],
+            "flower_eval/model_vs_numeric_mse": result["model_vs_numeric_summary"]["mse"],
+            "flower_eval/model_vs_numeric_rmse": result["model_vs_numeric_summary"]["rmse"],
+            "flower_eval/model_vs_numeric_mae": result["model_vs_numeric_summary"]["mae"],
+            "flower_eval/model_vs_numeric_max_abs_err": result["model_vs_numeric_summary"]["max_abs_err"],
+            "flower_eval/failed_case_count": result["failed_case_count"],
+            "flower_eval/representative_curve": _build_swanlab_image(swanlab, representative_curve_path),
+            "flower_eval/case_summary_table": _build_case_summary_table_payload(
+                swanlab,
+                result["cases"],
+                result["failed_case_slices"],
+            ),
         })
         run.finish()
 

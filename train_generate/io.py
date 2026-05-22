@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import asdict
 import json
@@ -11,11 +11,12 @@ import numpy as np
 from .config import DataConfig, GenerationConfig, default_dataset_name
 
 
-DATASET_FORMAT_VERSION = 4
-SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4}
-FIELD_ORDER = ("phi9", "hkappa_target")
+DATASET_FORMAT_VERSION = 5
+SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4, 5}
+FIELD_ORDER = ("phi9", "features", "hkappa_target")
 FIELD_DTYPES = {
     "phi9": np.float32,
+    "features": np.float32,
     "hkappa_target": np.float32,
 }
 DEFAULT_PREVIEW_SAMPLES = 5
@@ -51,14 +52,15 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def _preview_records_from_split(split: dict[str, np.ndarray], *, limit: int = DEFAULT_PREVIEW_SAMPLES) -> list[dict[str, float]]:
+def _preview_records_from_split(split: dict[str, np.ndarray], *, limit: int = DEFAULT_PREVIEW_SAMPLES) -> list[dict[str, Any]]:
     n_items = min(int(split["phi9"].shape[0]), int(limit))
-    preview: list[dict[str, float]] = []
+    preview: list[dict[str, Any]] = []
     for row_idx in range(n_items):
         preview.append(
             {
-                field_name: float(np.asarray(split[field_name][row_idx]).reshape(-1)[0].item())
+                field_name: np.asarray(split[field_name][row_idx]).reshape(-1).tolist()
                 for field_name in FIELD_ORDER
+                if field_name in split
             }
         )
     return preview
@@ -69,15 +71,16 @@ def build_dataset_manifest(bundle: dict[str, Any], dataset_path: str | Path) -> 
     generation_cfg = normalize_generation_config(bundle["generation_config"])
     splits: dict[str, Any] = {}
     for split_name, split in bundle["splits"].items():
+        available_fields = [field_name for field_name in FIELD_ORDER if field_name in split]
         splits[split_name] = {
-            "size": int(split["phi9"].shape[0]),
+            "size": int(split["features"].shape[0]),
             "fields": [
                 {
                     "name": field_name,
                     "shape": list(split[field_name].shape),
                     "dtype": str(split[field_name].dtype),
                 }
-                for field_name in FIELD_ORDER
+                for field_name in available_fields
             ],
             "sample_preview": _preview_records_from_split(split),
         }
@@ -89,7 +92,7 @@ def build_dataset_manifest(bundle: dict[str, Any], dataset_path: str | Path) -> 
             "manifest_path": str(dataset_manifest_path(dataset_path)),
         },
         "dataset_format_version": DATASET_FORMAT_VERSION,
-        "task": "3x3 phi stencil -> h*kappa",
+        "task": "3x3 stencil features -> h*kappa",
         "configs": {
             "data": _json_ready(asdict(bundle["config"])),
             "generation": _json_ready(asdict(generation_cfg)),
@@ -126,10 +129,16 @@ def save_training_dataset_hdf5(
 
     with h5py.File(output_path, "w") as handle:
         data_cfg = bundle["config"]
+        raw_feature_dim = int(bundle["splits"]["train"]["features"].shape[1]) if "train" in bundle["splits"] else 9
         handle.attrs["dataset_format_version"] = DATASET_FORMAT_VERSION
         handle.attrs["geometry_seed"] = int(data_cfg.geometry_seed)
         handle.attrs["variations"] = int(data_cfg.variations)
         handle.attrs["initial_field_types_json"] = json.dumps(list(data_cfg.initial_field_types))
+        handle.attrs["augment_sign_flip"] = bool(data_cfg.augment_sign_flip)
+        handle.attrs["feature_version"] = int(data_cfg.feature_version)
+        handle.attrs["feature_dim_raw"] = int(raw_feature_dim)
+        handle.attrs["feature_order"] = "phi9" if int(data_cfg.feature_version) == 1 else "phi9_nx9_ny9"
+        handle.attrs["gradient_epsilon"] = float(data_cfg.gradient_epsilon)
         handle.attrs["shape_types_json"] = json.dumps(list(data_cfg.shape_types))
         handle.attrs["train_fraction"] = float(data_cfg.train_fraction)
         handle.attrs["val_fraction"] = float(data_cfg.val_fraction)
@@ -156,6 +165,8 @@ def save_training_dataset_hdf5(
         for split_name, split in bundle["splits"].items():
             group = handle.create_group(split_name)
             for field_name in FIELD_ORDER:
+                if field_name not in split:
+                    continue
                 group.create_dataset(
                     field_name,
                     data=np.asarray(split[field_name], dtype=FIELD_DTYPES[field_name]),
@@ -180,15 +191,17 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
             if split_name not in handle:
                 continue
             group = handle[split_name]
+            available_fields = [field_name for field_name in FIELD_ORDER if field_name in group]
+            size_field = "features" if "features" in group else "phi9"
             splits[split_name] = {
-                "size": int(group["phi9"].shape[0]),
+                "size": int(group[size_field].shape[0]),
                 "fields": [
                     {
                         "name": field_name,
                         "shape": list(group[field_name].shape),
                         "dtype": str(group[field_name].dtype),
                     }
-                    for field_name in FIELD_ORDER
+                    for field_name in available_fields
                 ],
             }
         return {
@@ -198,13 +211,18 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                 "manifest_path": str(dataset_manifest_path(dataset_path)),
             },
             "dataset_format_version": int(handle.attrs.get("dataset_format_version", 0)),
-            "task": "3x3 phi stencil -> h*kappa",
+            "task": "3x3 stencil features -> h*kappa",
             "configs": {
                 "data": {
                     "resolutions": [int(item) for item in handle["resolutions"][:]],
                     "geometry_seed": int(handle.attrs.get("geometry_seed", 0)),
                     "variations": int(handle.attrs.get("variations", 0)),
                     "initial_field_types": json.loads(str(handle.attrs.get("initial_field_types_json", "[]"))),
+                    "augment_sign_flip": bool(handle.attrs.get("augment_sign_flip", False)),
+                    "feature_version": int(handle.attrs.get("feature_version", 1)),
+                    "feature_dim_raw": int(handle.attrs.get("feature_dim_raw", 9)),
+                    "feature_order": str(handle.attrs.get("feature_order", "phi9")),
+                    "gradient_epsilon": float(handle.attrs.get("gradient_epsilon", DataConfig().gradient_epsilon)),
                     "shape_types": json.loads(str(handle.attrs.get("shape_types_json", '["circle"]'))),
                     "train_fraction": float(handle.attrs.get("train_fraction", 0.0)),
                     "val_fraction": float(handle.attrs.get("val_fraction", 0.0)),
@@ -268,11 +286,16 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
         raw_shape_types = handle.attrs.get("shape_types_json", '["circle"]')
         if isinstance(raw_shape_types, bytes):
             raw_shape_types = raw_shape_types.decode("utf-8")
+        feature_version = int(handle.attrs.get("feature_version", 1))
+        gradient_epsilon = float(handle.attrs.get("gradient_epsilon", DataConfig().gradient_epsilon))
         data_config = DataConfig(
             resolutions=tuple(int(item) for item in handle["resolutions"][:]),
             geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
             variations=int(handle.attrs.get("variations", DataConfig().variations)),
             initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
+            augment_sign_flip=bool(handle.attrs.get("augment_sign_flip", False)),
+            feature_version=feature_version,
+            gradient_epsilon=gradient_epsilon,
             shape_types=tuple(json.loads(str(raw_shape_types))),
             train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
             val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),
@@ -320,14 +343,17 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             if split_name not in handle:
                 continue
             group = handle[split_name]
-            missing_fields = [field_name for field_name in FIELD_ORDER if field_name not in group]
+            missing_fields = [field_name for field_name in ("phi9", "hkappa_target") if field_name not in group]
             if missing_fields:
                 raise ValueError(
                     f"Split {split_name!r} in dataset {h5_path.resolve()} is missing required fields: {missing_fields}."
                 )
+            phi9 = np.asarray(group["phi9"][:], dtype=np.float32)
+            features = np.asarray(group["features"][:], dtype=np.float32) if "features" in group else phi9.copy()
             splits[split_name] = {
-                field_name: np.asarray(group[field_name][:], dtype=np.float32)
-                for field_name in FIELD_ORDER
+                "phi9": phi9,
+                "features": features,
+                "hkappa_target": np.asarray(group["hkappa_target"][:], dtype=np.float32),
             }
 
     return {
@@ -346,5 +372,5 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             for name, ids in split_blueprint_indices.items()
         },
         "splits": splits,
-        "sizes": {name: int(split["phi9"].shape[0]) for name, split in splits.items()},
+        "sizes": {name: int(split["features"].shape[0]) for name, split in splits.items()},
     }

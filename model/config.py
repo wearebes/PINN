@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field, fields
@@ -20,15 +20,18 @@ def default_output_model_path() -> Path:
 @dataclass(frozen=True)
 class MLP_TrainConfig:
     hidden_units: int = 128
-    activation: str = "relu"
     lr: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
-    batch_size: int = 32
+    batch_size: int = 256
     seed: int = 42
-    compile_mode: str = "none"
-    grad_accum_steps: int = 1
+    compile_mode: str = "overhead-reduce"
     profile_cuda_timing: bool = False
+    input_dim: int = 9
+    raw_feature_dim: int = 9
+    feature_version: int = 1
+    pca_enabled: bool = False
+    pca_dim: int = 9
     dataset_path: Path = field(default_factory=default_dataset_path)
     output_model_path: Path = field(default_factory=default_output_model_path)
 
@@ -37,15 +40,18 @@ class MLP_TrainConfig:
 class CNN_TrainConfig:
     kernel_size: int = 3
     padding: int = 1
-    activation: str = "relu"
     lr: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
     batch_size: int = 204800
     seed: int = 42
-    compile_mode: str = "none"
-    grad_accum_steps: int = 1
+    compile_mode: str = "overhead-reduce"
     profile_cuda_timing: bool = False
+    input_dim: int = 9
+    raw_feature_dim: int = 9
+    feature_version: int = 1
+    pca_enabled: bool = False
+    pca_dim: int = 9
     dataset_path: Path = field(default_factory=default_dataset_path)
     output_model_path: Path = field(default_factory=default_output_model_path)
 

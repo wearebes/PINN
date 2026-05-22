@@ -224,6 +224,45 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
     return np.asarray(phi[row_idx, col_idx], dtype=np.float32)
 
 
+def central_difference_gradient(phi: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
+    phi = np.asarray(phi, dtype=np.float64)
+    h = float(h)
+    phix = np.empty_like(phi, dtype=np.float64)
+    phiy = np.empty_like(phi, dtype=np.float64)
+    phix[:, 1:-1] = (phi[:, 2:] - phi[:, :-2]) / (2.0 * h)
+    phix[:, 0] = (phi[:, 1] - phi[:, 0]) / h
+    phix[:, -1] = (phi[:, -1] - phi[:, -2]) / h
+    phiy[1:-1, :] = (phi[2:, :] - phi[:-2, :]) / (2.0 * h)
+    phiy[0, :] = (phi[1, :] - phi[0, :]) / h
+    phiy[-1, :] = (phi[-1, :] - phi[-2, :]) / h
+    return phix, phiy
+
+
+def raw_feature_dim(feature_version: int) -> int:
+    return 9 if int(feature_version) == 1 else 27
+
+
+def build_raw_features(
+    phi: np.ndarray,
+    indices: np.ndarray,
+    *,
+    h: float,
+    feature_version: int,
+    gradient_epsilon: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    phi9 = extract_phi9(phi, indices)
+    if int(feature_version) == 1:
+        return phi9, phi9.copy()
+    phix, phiy = central_difference_gradient(phi, h)
+    phix9 = extract_phi9(phix, indices)
+    phiy9 = extract_phi9(phiy, indices)
+    denom = np.sqrt(phix9.astype(np.float64) ** 2 + phiy9.astype(np.float64) ** 2 + float(gradient_epsilon))
+    nx9 = (phix9 / denom).astype(np.float32, copy=False)
+    ny9 = (phiy9 / denom).astype(np.float32, copy=False)
+    features = np.concatenate((phi9, nx9, ny9), axis=1).astype(np.float32, copy=False)
+    return phi9, features
+
+
 def _project_theta_scalar(u: float, v: float, a: float, b: float, theta0: float, *, max_iter: int, tol: float) -> float:
     theta = float(theta0 % TWO_PI)
     for _ in range(max_iter):
@@ -632,6 +671,7 @@ def sample_blueprint(
 ) -> list[dict[str, np.ndarray]]:
     samples: list[dict[str, np.ndarray]] = []
     rho = int(blueprint["meta"]["resolution"])
+    h = float(blueprint["params"]["h"])
     X, Y = build_grid(rho)
     for initial_field_type in normalize_initial_field_types(data_config.initial_field_types):
         phi0 = build_phi0_grid(blueprint, initial_field_type, data_config=data_config, X=X, Y=Y)
@@ -640,12 +680,17 @@ def sample_blueprint(
             raise RuntimeError(
                 f"No interface nodes found for {blueprint['meta']['blueprint_id']} with initial_field_type={initial_field_type}."
             )
-        samples.append(
-            {
-                "phi9": extract_phi9(phi0, indices),
-                "hkappa_target": compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y),
-            }
+        phi9, features = build_raw_features(
+            phi0,
+            indices,
+            h=h,
+            feature_version=int(data_config.feature_version),
+            gradient_epsilon=float(data_config.gradient_epsilon),
         )
+        hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
+        samples.append({"phi9": phi9, "features": features, "hkappa_target": hkappa})
+        if data_config.augment_sign_flip:
+            samples.append({"phi9": -phi9, "features": -features, "hkappa_target": -hkappa})
     return samples
 
 
@@ -665,10 +710,12 @@ def concat_split_samples(items: list[dict[str, np.ndarray]]) -> dict[str, np.nda
     if not items:
         return {
             "phi9": np.zeros((0, 9), dtype=np.float32),
+            "features": np.zeros((0, 9), dtype=np.float32),
             "hkappa_target": np.zeros((0, 1), dtype=np.float32),
         }
     return {
         "phi9": np.concatenate([item["phi9"] for item in items], axis=0).astype(np.float32, copy=False),
+        "features": np.concatenate([item["features"] for item in items], axis=0).astype(np.float32, copy=False),
         "hkappa_target": np.concatenate([item["hkappa_target"] for item in items], axis=0).astype(np.float32, copy=False),
     }
 
@@ -692,9 +739,12 @@ def generate_training_splits(
         geometry_seed=int(data_config.geometry_seed),
         variations=int(data_config.variations),
         initial_field_types=normalize_initial_field_types(data_config.initial_field_types),
+        augment_sign_flip=bool(data_config.augment_sign_flip),
         train_fraction=float(data_config.train_fraction),
         val_fraction=float(data_config.val_fraction),
         shape_types=normalize_shape_types(data_config.shape_types),
+        feature_version=int(data_config.feature_version),
+        gradient_epsilon=float(data_config.gradient_epsilon),
         ellipse_num_a=int(data_config.ellipse_num_a),
         ellipse_variations_per_a=int(data_config.ellipse_variations_per_a),
         ellipse_axis_ratio_min=float(data_config.ellipse_axis_ratio_min),
@@ -795,7 +845,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--geometry-seed", type=int, default=data_cfg.geometry_seed)
     parser.add_argument("--variations", type=int, default=data_cfg.variations)
     parser.add_argument("--initial-field-types", type=str, default=",".join(data_cfg.initial_field_types))
+    parser.add_argument(
+        "--augment-sign-flip",
+        action=argparse.BooleanOptionalAction,
+        default=data_cfg.augment_sign_flip,
+        help="Emit both (phi9, hkappa_target) and (-phi9, -hkappa_target) for each generated sample.",
+    )
     parser.add_argument("--shape-types", type=str, default=",".join(data_cfg.shape_types))
+    parser.add_argument("--feature-version", type=int, default=data_cfg.feature_version, choices=(1, 2))
+    parser.add_argument("--gradient-epsilon", type=float, default=data_cfg.gradient_epsilon)
     parser.add_argument("--train-fraction", type=float, default=data_cfg.train_fraction)
     parser.add_argument("--val-fraction", type=float, default=data_cfg.val_fraction)
     parser.add_argument("--ellipse-num-a", type=int, default=data_cfg.ellipse_num_a)
@@ -821,9 +879,12 @@ def main() -> None:
         geometry_seed=args.geometry_seed,
         variations=args.variations,
         initial_field_types=normalize_initial_field_types(_parse_str_tuple(str(args.initial_field_types))),
+        augment_sign_flip=bool(args.augment_sign_flip),
         train_fraction=args.train_fraction,
         val_fraction=args.val_fraction,
         shape_types=normalize_shape_types(_parse_str_tuple(str(args.shape_types))),
+        feature_version=int(args.feature_version),
+        gradient_epsilon=float(args.gradient_epsilon),
         ellipse_num_a=args.ellipse_num_a,
         ellipse_variations_per_a=args.ellipse_variations_per_a,
         ellipse_axis_ratio_min=args.ellipse_axis_ratio_min,
