@@ -130,15 +130,16 @@ def save_training_dataset_hdf5(
     with h5py.File(output_path, "w") as handle:
         data_cfg = bundle["config"]
         raw_feature_dim = int(bundle["splits"]["train"]["features"].shape[1]) if "train" in bundle["splits"] else 9
+        if raw_feature_dim != 9:
+            raise ValueError(f"V1 training datasets must store 9D phi9 features, got raw_feature_dim={raw_feature_dim}.")
         handle.attrs["dataset_format_version"] = DATASET_FORMAT_VERSION
         handle.attrs["geometry_seed"] = int(data_cfg.geometry_seed)
         handle.attrs["variations"] = int(data_cfg.variations)
         handle.attrs["initial_field_types_json"] = json.dumps(list(data_cfg.initial_field_types))
         handle.attrs["augment_sign_flip"] = bool(data_cfg.augment_sign_flip)
-        handle.attrs["feature_version"] = int(data_cfg.feature_version)
-        handle.attrs["feature_dim_raw"] = int(raw_feature_dim)
-        handle.attrs["feature_order"] = "phi9" if int(data_cfg.feature_version) == 1 else "phi9_nx9_ny9"
-        handle.attrs["gradient_epsilon"] = float(data_cfg.gradient_epsilon)
+        handle.attrs["feature_version"] = 1
+        handle.attrs["feature_dim_raw"] = 9
+        handle.attrs["feature_order"] = "phi9"
         handle.attrs["shape_types_json"] = json.dumps(list(data_cfg.shape_types))
         handle.attrs["train_fraction"] = float(data_cfg.train_fraction)
         handle.attrs["val_fraction"] = float(data_cfg.val_fraction)
@@ -222,7 +223,6 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                     "feature_version": int(handle.attrs.get("feature_version", 1)),
                     "feature_dim_raw": int(handle.attrs.get("feature_dim_raw", 9)),
                     "feature_order": str(handle.attrs.get("feature_order", "phi9")),
-                    "gradient_epsilon": float(handle.attrs.get("gradient_epsilon", DataConfig().gradient_epsilon)),
                     "shape_types": json.loads(str(handle.attrs.get("shape_types_json", '["circle"]'))),
                     "train_fraction": float(handle.attrs.get("train_fraction", 0.0)),
                     "val_fraction": float(handle.attrs.get("val_fraction", 0.0)),
@@ -287,15 +287,20 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
         if isinstance(raw_shape_types, bytes):
             raw_shape_types = raw_shape_types.decode("utf-8")
         feature_version = int(handle.attrs.get("feature_version", 1))
-        gradient_epsilon = float(handle.attrs.get("gradient_epsilon", DataConfig().gradient_epsilon))
+        raw_feature_dim = int(handle.attrs.get("feature_dim_raw", 9))
+        feature_order = str(handle.attrs.get("feature_order", "phi9"))
+        if feature_version != 1 or raw_feature_dim != 9 or feature_order != "phi9":
+            raise ValueError(
+                f"Dataset {h5_path.resolve()} is not a supported V1 phi9 dataset. "
+                f"Got feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
+                "Regenerate the dataset with the V1-only train_generate pipeline."
+            )
         data_config = DataConfig(
             resolutions=tuple(int(item) for item in handle["resolutions"][:]),
             geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
             variations=int(handle.attrs.get("variations", DataConfig().variations)),
             initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
             augment_sign_flip=bool(handle.attrs.get("augment_sign_flip", False)),
-            feature_version=feature_version,
-            gradient_epsilon=gradient_epsilon,
             shape_types=tuple(json.loads(str(raw_shape_types))),
             train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
             val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),
@@ -350,6 +355,12 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
                 )
             phi9 = np.asarray(group["phi9"][:], dtype=np.float32)
             features = np.asarray(group["features"][:], dtype=np.float32) if "features" in group else phi9.copy()
+            if phi9.ndim != 2 or phi9.shape[1] != 9:
+                raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {phi9.shape}.")
+            if features.ndim != 2 or features.shape[1] != 9:
+                raise ValueError(
+                    f"Split {split_name!r} features must have shape (N, 9) for the V1 pipeline, got {features.shape}."
+                )
             splits[split_name] = {
                 "phi9": phi9,
                 "features": features,

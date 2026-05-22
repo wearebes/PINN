@@ -20,8 +20,6 @@ class DataConfig:
     variations: int = 12
     initial_field_types: tuple[str, ...] = ("sdf", "nonsdf")
     augment_sign_flip: bool = True
-    feature_version: int = 1
-    gradient_epsilon: float = 1.0e-8
     train_fraction: float = 0.70
     val_fraction: float = 0.15
     shape_types: tuple[str, ...] = ("circle", "ellipse")

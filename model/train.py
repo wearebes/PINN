@@ -18,7 +18,6 @@ if __package__ in (None, ""):
     from evaluate.shared import (
         apply_feature_transform,
         csv_to_list,
-        feature_stats_path,
         fit_feature_transform,
         init_swanlab_run,
         normalization_csv_path,
@@ -32,7 +31,6 @@ else:
     from evaluate.shared import (
         apply_feature_transform,
         csv_to_list,
-        feature_stats_path,
         fit_feature_transform,
         init_swanlab_run,
         normalization_csv_path,
@@ -73,26 +71,30 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     return unwrapped
 
 
-def _validate_split(split_name: str, split: dict[str, Any]) -> None:
-    for field_name in ("phi9", "features", "hkappa_target"):
+def _validate_split(split_name: str, split: dict[str, Any], *, require_phi9: bool = True) -> None:
+    required_fields = ("features", "hkappa_target") if not require_phi9 else ("phi9", "features", "hkappa_target")
+    for field_name in required_fields:
         if field_name not in split:
             raise ValueError(f"Split {split_name!r} is missing required field {field_name!r}.")
-    if split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9:
-        raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
-    if split["features"].ndim != 2:
-        raise ValueError(f"Split {split_name!r} features must have shape (N, D), got {split['features'].shape}.")
+    if require_phi9:
+        if split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9:
+            raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
+    if split["features"].ndim != 2 or split["features"].shape[1] != 9:
+        raise ValueError(f"Split {split_name!r} features must have shape (N, 9), got {split['features'].shape}.")
     sample_count = int(split["features"].shape[0])
     if sample_count == 0:
         raise ValueError(f"Split {split_name!r} is empty and cannot be used for training.")
-    if int(split["phi9"].shape[0]) != sample_count or int(split["hkappa_target"].shape[0]) != sample_count:
+    if int(split["hkappa_target"].shape[0]) != sample_count:
+        raise ValueError(f"Split {split_name!r} fields do not share the same first dimension.")
+    if require_phi9 and int(split["phi9"].shape[0]) != sample_count:
         raise ValueError(f"Split {split_name!r} fields do not share the same first dimension.")
 
 
-def validate_training_splits(dataset_bundle: dict[str, Any]) -> None:
+def validate_training_splits(dataset_bundle: dict[str, Any], *, require_phi9: bool = True) -> None:
     for split_name in TRAIN_SPLIT_NAMES:
         if split_name not in dataset_bundle["splits"]:
             raise ValueError(f"Training requires split {split_name!r}.")
-        _validate_split(split_name, dataset_bundle["splits"][split_name])
+        _validate_split(split_name, dataset_bundle["splits"][split_name], require_phi9=require_phi9)
 
 
 def transform_dataset_bundle(dataset_bundle: dict[str, Any], *, feature_transform: dict[str, Any]) -> dict[str, Any]:
@@ -261,7 +263,7 @@ def train_model(
     amp_enabled: bool = False,
     phase_log_path: str | Path | None = None,
 ) -> tuple[nn.Module, dict[str, Any]]:
-    validate_training_splits(bundle)
+    validate_training_splits(bundle, require_phi9=False)
     optimizer = create_optimizer(checkpoint_model, train_config.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled) if device.type == "cuda" else None
     best_val = float("inf")
@@ -360,7 +362,7 @@ def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int, 
     print(f"Shape types: {getattr(data_cfg, 'shape_types', ('circle',))}")
     print(f"Resolutions: {data_cfg.resolutions}")
     print(f"Initial field types: {data_cfg.initial_field_types}")
-    print(f"Feature version: {getattr(data_cfg, 'feature_version', 1)}")
+    print("Feature order: phi9")
     print(f"Raw feature dim: {int(feature_transform['raw_feature_dim'])}")
     print(f"Model input dim: {int(feature_transform['output_dim'])}")
     print(f"Transform kind: {feature_transform['transform_kind']}")
@@ -371,20 +373,18 @@ def describe_dataset_bundle(dataset_bundle: dict[str, Any], *, batch_size: int, 
         print(f"{split_name:>5s}: {split_size}")
 
 
-def build_swanlab_config(*, train_config: Any, dataset_bundle: dict[str, Any], dataset_path: str | Path, checkpoint_path: str | Path, feature_stats_output: str | Path, feature_transform: dict[str, Any], device: torch.device, parameter_count: int, model_type: str) -> dict[str, Any]:
+def build_swanlab_config(*, train_config: Any, dataset_bundle: dict[str, Any], dataset_path: str | Path, checkpoint_path: str | Path, normalization_output: str | Path, feature_transform: dict[str, Any], device: torch.device, parameter_count: int, model_type: str) -> dict[str, Any]:
     config: dict[str, Any] = {
         "task": "3x3 stencil features -> h*kappa",
         "model_type": model_type,
         "dataset_path": str(Path(dataset_path).resolve()),
         "checkpoint_path": str(Path(checkpoint_path).resolve()),
-        "feature_stats_path": str(Path(feature_stats_output).resolve()),
+        "normalization_csv_path": str(Path(normalization_output).resolve()),
         "device": str(device),
         "parameter_count": int(parameter_count),
         "transform/kind": feature_transform["transform_kind"],
         "transform/raw_feature_dim": int(feature_transform["raw_feature_dim"]),
         "transform/output_dim": int(feature_transform["output_dim"]),
-        "transform/pca_enabled": bool(feature_transform["pca_enabled"]),
-        "transform/pca_dim": int(feature_transform["pca_dim"]),
     }
     config.update({f"train/{key}": str(value) if isinstance(value, Path) else value for key, value in asdict(train_config).items()})
     config.update({f"data/{key}": value for key, value in asdict(dataset_bundle["config"]).items()})
@@ -399,10 +399,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-type", type=str, default="mlp", choices=["mlp", "cnn"])
     parser.add_argument("--dataset-output", type=str, default=str(default_dataset_path()))
     parser.add_argument("--output-model", type=str, default=str(default_output_model_path()))
-    parser.add_argument("--feature-stats", type=str, default="")
+    parser.add_argument("--device", type=str, default="")
+    parser.add_argument("--hidden-units", type=int, default=mlp_defaults.hidden_units)
+    parser.add_argument("--kernel-size", type=int, default=cnn_defaults.kernel_size)
+    parser.add_argument("--padding", type=int, default=cnn_defaults.padding)
     parser.add_argument("--normalization-csv", type=str, default="")
+    parser.add_argument("--lr", type=float, default=mlp_defaults.lr)
+    parser.add_argument("--max-epochs", type=int, default=mlp_defaults.max_epochs)
+    parser.add_argument("--patience", type=int, default=mlp_defaults.patience)
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=mlp_defaults.seed)
-    parser.add_argument("--pca-enabled", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use-swanlab", action="store_true")
     parser.add_argument("--swanlab-project", type=str, default="PINN")
     parser.add_argument("--swanlab-experiment-name", type=str, default="")
@@ -423,40 +429,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()   #传递参数
     dataset_path = Path(args.dataset_output)
+    mlp_defaults = MLP_TrainConfig()
+    cnn_defaults = CNN_TrainConfig()
     
     model_type: ModelType = args.model_type  # type: ignore[assignment]
     raw_bundle = load_training_arrays_from_hdf5(dataset_path)
     validate_training_splits(raw_bundle)
-    dataset_feature_version = int(getattr(raw_bundle["config"], "feature_version", 1))
     raw_feature_dim = int(raw_bundle["splits"]["train"]["features"].shape[1])
-    pca_enabled = bool(args.pca_enabled) if args.pca_enabled is not None else dataset_feature_version == 2
-    if dataset_feature_version == 1 and pca_enabled:
-        raise ValueError("feature_version=1 keeps the legacy standardized phi9 pipeline; do not enable PCA.")
-    if model_type == "cnn" and (dataset_feature_version != 1 or raw_feature_dim != 9):
-        raise ValueError("CNN is only supported for legacy feature_version=1 phi9 inputs.")
+    if raw_feature_dim != 9:
+        raise ValueError(
+            f"Training requires a V1 phi9 dataset with 9D features, got raw_feature_dim={raw_feature_dim}."
+        )
     feature_transform = fit_feature_transform(
         raw_bundle["splits"]["train"]["features"],
-        feature_version=dataset_feature_version,
-        pca_enabled=pca_enabled,
-        pca_dim=int(args.pca_dim),
         dataset_path=dataset_path,
     )
-    if args.feature_stats:
-        feature_stats_output = Path(args.feature_stats)
-    elif args.normalization_csv:
-        feature_stats_output = Path(args.normalization_csv)
-    elif dataset_feature_version == 1:
-        feature_stats_output = normalization_csv_path(args.output_model)
-    else:
-        feature_stats_output = feature_stats_path(args.output_model)
-    saved_feature_stats_path = save_feature_stats(feature_stats_output, transform=feature_transform, dataset_path=dataset_path)
+    normalization_output = Path(args.normalization_csv) if args.normalization_csv else normalization_csv_path(args.output_model)
+    saved_normalization_path = save_feature_stats(normalization_output, transform=feature_transform, dataset_path=dataset_path)
     transformed_bundle = transform_dataset_bundle(raw_bundle, feature_transform=feature_transform)
 
+    default_batch_size = mlp_defaults.batch_size if model_type == "mlp" else cnn_defaults.batch_size
     overrides = {
         "lr": args.lr,
         "max_epochs": args.max_epochs,
         "patience": args.patience,
-        "batch_size": args.batch_size,
+        "batch_size": args.batch_size if args.batch_size is not None else default_batch_size,
         "seed": args.seed,
         "dataset_path": dataset_path,
         "output_model_path": Path(args.output_model),
@@ -464,9 +461,6 @@ def main() -> None:
         "profile_cuda_timing": args.profile_cuda_timing,
         "input_dim": int(feature_transform["output_dim"]),
         "raw_feature_dim": raw_feature_dim,
-        "feature_version": dataset_feature_version,
-        "pca_enabled": bool(feature_transform["pca_enabled"]),
-        "pca_dim": int(feature_transform["pca_dim"]),
     }
     if model_type == "mlp":
         overrides["hidden_units"] = args.hidden_units
@@ -532,7 +526,7 @@ def main() -> None:
     print(f"Compile enabled: {compile_enabled} (mode: {compile_mode})")
     print(f"Profile CUDA timing: {train_config.profile_cuda_timing}")
     print(f"Dataset file: {dataset_path.resolve()}")
-    print(f"Feature stats: {saved_feature_stats_path.resolve()}")
+    print(f"Normalization CSV: {saved_normalization_path.resolve()}")
     print(f"Parameter count: {count_parameters(checkpoint_model)}")
     describe_dataset_bundle(transformed_bundle, batch_size=train_config.batch_size, feature_transform=feature_transform)
     swanlab_run = None
@@ -551,7 +545,7 @@ def main() -> None:
                 dataset_bundle=transformed_bundle,
                 dataset_path=dataset_path,
                 checkpoint_path=args.output_model,
-                feature_stats_output=saved_feature_stats_path,
+                normalization_output=saved_normalization_path,
                 feature_transform=feature_transform,
                 device=device,
                 parameter_count=count_parameters(checkpoint_model),

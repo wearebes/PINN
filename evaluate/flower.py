@@ -194,6 +194,77 @@ def _build_case_summary_table_payload(
     return rows
 
 
+def _build_step_metric_payload(
+    prefix: str,
+    metric: dict[str, float],
+    *,
+    include_max_abs_err: bool,
+) -> dict[str, float]:
+    summary = _metric_summary(metric)
+    payload = {
+        f"{prefix}/rmse": float(summary["rmse"]),
+        f"{prefix}/mae": float(summary["mae"]),
+    }
+    if include_max_abs_err:
+        payload[f"{prefix}/max_abs_err"] = float(summary["max_abs_err"])
+    return payload
+
+
+def _log_swanlab_step_series(run: Any, result: dict[str, Any]) -> None:
+    for row in result["by_iter"]:
+        step = int(row["iter"])
+        payload: dict[str, float] = {}
+        payload.update(
+            _build_step_metric_payload(
+                "flower_eval/by_iter/model_vs_analytic",
+                row["model_vs_analytic"],
+                include_max_abs_err=True,
+            )
+        )
+        payload.update(
+            _build_step_metric_payload(
+                "flower_eval/by_iter/numeric_vs_analytic",
+                row["numeric_vs_analytic"],
+                include_max_abs_err=True,
+            )
+        )
+        payload.update(
+            _build_step_metric_payload(
+                "flower_eval/by_iter/model_vs_numeric",
+                row["model_vs_numeric"],
+                include_max_abs_err=False,
+            )
+        )
+        run.log(payload, step=step)
+
+    for case_row in sorted(result["cases"], key=_case_sort_key):
+        step = int(case_row["iter"])
+        case_key = _sanitize_name(case_row["case_label"])
+        payload = {}
+        payload.update(
+            _build_step_metric_payload(
+                f"flower_eval/by_case/{case_key}/model_vs_analytic",
+                case_row["model_vs_analytic"],
+                include_max_abs_err=True,
+            )
+        )
+        payload.update(
+            _build_step_metric_payload(
+                f"flower_eval/by_case/{case_key}/numeric_vs_analytic",
+                case_row["numeric_vs_analytic"],
+                include_max_abs_err=True,
+            )
+        )
+        payload.update(
+            _build_step_metric_payload(
+                f"flower_eval/by_case/{case_key}/model_vs_numeric",
+                case_row["model_vs_numeric"],
+                include_max_abs_err=False,
+            )
+        )
+        run.log(payload, step=step)
+
+
 def _build_case_curve_row(
     *,
     case_id: int,
@@ -284,10 +355,18 @@ def load_flower_dataset(path: str | Path) -> dict[str, Any]:
         attrs = {key: handle.attrs[key] for key in handle.attrs.keys()}
     phi9 = np.asarray(arrays["phi9"], dtype=np.float32)
     features = np.asarray(arrays.get("features", arrays["phi9"]), dtype=np.float32)
+    feature_version = int(attrs.get("feature_version", 1))
+    raw_feature_dim = int(attrs.get("feature_dim_raw", features.shape[1] if features.ndim == 2 else 9))
+    feature_order = str(attrs.get("feature_order", "phi9"))
+    if feature_version != 1 or raw_feature_dim != 9 or feature_order != "phi9":
+        raise ValueError(
+            f"Flower dataset {dataset_path.resolve()} is not a supported V1 phi9 dataset. "
+            f"Got feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}."
+        )
     if phi9.ndim != 2 or phi9.shape[1] != 9:
         raise ValueError(f"Flower dataset phi9 must have shape (N, 9), got {phi9.shape}.")
-    if features.ndim != 2:
-        raise ValueError(f"Flower dataset features must have shape (N, D), got {features.shape}.")
+    if features.ndim != 2 or features.shape[1] != 9:
+        raise ValueError(f"Flower dataset features must have shape (N, 9), got {features.shape}.")
     n = int(phi9.shape[0])
     if n == 0:
         raise ValueError(f"Flower dataset {dataset_path.resolve()} is empty.")
@@ -315,7 +394,7 @@ def evaluate_flower(
     *,
     dataset_path: str | Path,
     model_path: str | Path,
-    feature_stats_path: str | Path | None,
+    normalization_csv_path: str | Path | None,
     device: torch.device,
     representative_case_id: str | None = None,
 ) -> dict[str, Any]:
@@ -328,9 +407,9 @@ def evaluate_flower(
     case_ids = np.asarray(arrays["case_id"]).reshape(-1)
     iterations = np.asarray(arrays["iter"]).reshape(-1)
     model, checkpoint_meta = load_model_from_checkpoint(model_path, device=device)
-    feature_transform, feature_stats_source = resolve_feature_transform(
+    feature_transform, normalization_source = resolve_feature_transform(
         model_path=model_path,
-        explicit_path=feature_stats_path,
+        explicit_path=normalization_csv_path,
         checkpoint_meta=checkpoint_meta,
     )
     numeric = central_difference_hkappa_from_phi9(phi9)
@@ -391,7 +470,7 @@ def evaluate_flower(
         "sample_count": int(phi9.shape[0]),
         "rho_models": bundle["rho_models"],
         "model_path": str(Path(model_path).resolve()),
-        "feature_stats_source": feature_stats_source,
+        "normalization_source": normalization_source,
         "model_type": checkpoint_meta["model_type"],
         "feature_version": int(feature_transform["feature_version"]),
         "raw_feature_dim": int(feature_transform["raw_feature_dim"]),
@@ -463,7 +542,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to a flower HDF5 generated for the target model's rho_model. Pass it explicitly; the evaluator does not infer it.",
     )
     parser.add_argument("--model-path", type=str, default=str(default_model))
-    parser.add_argument("--feature-stats", type=str, default="")
     parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--device", type=str, default="")
     parser.add_argument(
@@ -487,11 +565,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    feature_stats_arg = args.feature_stats or args.normalization_csv or None
     result = evaluate_flower(
         dataset_path=args.data,
         model_path=args.model_path,
-        feature_stats_path=feature_stats_arg,
+        normalization_csv_path=args.normalization_csv or None,
         device=device,
         representative_case_id=args.representative_case_id or None,
     )
@@ -500,7 +577,7 @@ def main() -> None:
     print(f"Samples: {result['sample_count']}")
     print(f"Dataset rho_model values: {', '.join(str(item) for item in result['rho_models'])}")
     print(f"Checkpoint: {result['model_path']}")
-    print(f"Feature stats source: {result['feature_stats_source']}")
+    print(f"Normalization source: {result['normalization_source']}")
     print(f"Model type: {result['model_type']}")
     print(f"Feature version: {result['feature_version']}")
     print(f"Raw feature dim: {result['raw_feature_dim']}")
@@ -548,7 +625,7 @@ def main() -> None:
                 "dataset_path": result["dataset_path"],
                 "rho_models": list(result["rho_models"]),
                 "model_path": result["model_path"],
-                "feature_stats_source": result["feature_stats_source"],
+                "normalization_source": result["normalization_source"],
                 "model_type": result["model_type"],
                 "sample_count": result["sample_count"],
                 "representative_case": result["representative_case"]["case_key"],
@@ -577,6 +654,7 @@ def main() -> None:
                 result["failed_case_slices"],
             ),
         })
+        _log_swanlab_step_series(run, result)
         run.finish()
 
 

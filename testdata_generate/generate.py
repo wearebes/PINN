@@ -15,23 +15,31 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from testdata_generate.config import (
         DATASET_SCHEMA_VERSION,
+        DEFAULT_CUSTOM_DATASET_NAME,
         DEFAULT_DATASET_NAME,
         DEFAULT_OUTPUT_DIR,
         TestDataConfig,
         available_rho_models,
         filter_scenarios_by_rho_model,
         flower_dataset_name,
+        legacy_flower_scenarios,
+        load_scenario_config,
+        normalize_test_iters,
     )
     from .reinit import LevelSetReinitializer
 else:
     from .config import (
         DATASET_SCHEMA_VERSION,
+        DEFAULT_CUSTOM_DATASET_NAME,
         DEFAULT_DATASET_NAME,
         DEFAULT_OUTPUT_DIR,
         TestDataConfig,
         available_rho_models,
         filter_scenarios_by_rho_model,
         flower_dataset_name,
+        legacy_flower_scenarios,
+        load_scenario_config,
+        normalize_test_iters,
     )
     from .reinit import LevelSetReinitializer
 
@@ -92,36 +100,9 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
     return extract_stencil_values(phi, indices)
 
 
-def central_difference_gradient(phi: np.ndarray, h: float) -> tuple[np.ndarray, np.ndarray]:
-    phi = np.asarray(phi, dtype=np.float64)
-    h = float(h)
-    phix = np.empty_like(phi, dtype=np.float64)
-    phiy = np.empty_like(phi, dtype=np.float64)
-    phix[:, 1:-1] = (phi[:, 2:] - phi[:, :-2]) / (2.0 * h)
-    phix[:, 0] = (phi[:, 1] - phi[:, 0]) / h
-    phix[:, -1] = (phi[:, -1] - phi[:, -2]) / h
-    phiy[1:-1, :] = (phi[2:, :] - phi[:-2, :]) / (2.0 * h)
-    phiy[0, :] = (phi[1, :] - phi[0, :]) / h
-    phiy[-1, :] = (phi[-1, :] - phi[-2, :]) / h
-    return phix, phiy
-
-
-def raw_feature_dim(feature_version: int) -> int:
-    return 9 if int(feature_version) == 1 else 27
-
-
-def build_raw_features(phi: np.ndarray, indices: np.ndarray, *, h: float, feature_version: int, gradient_epsilon: float) -> tuple[np.ndarray, np.ndarray]:
+def build_raw_features(phi: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     phi9 = extract_phi9(phi, indices)
-    if int(feature_version) == 1:
-        return phi9, phi9.copy()
-    phix, phiy = central_difference_gradient(phi, h)
-    phix9 = extract_stencil_values(phix, indices)
-    phiy9 = extract_stencil_values(phiy, indices)
-    denom = np.sqrt(phix9.astype(np.float64) ** 2 + phiy9.astype(np.float64) ** 2 + float(gradient_epsilon))
-    nx9 = (phix9 / denom).astype(np.float32, copy=False)
-    ny9 = (phiy9 / denom).astype(np.float32, copy=False)
-    features = np.concatenate((phi9, nx9, ny9), axis=1).astype(np.float32, copy=False)
-    return phi9, features
+    return phi9, phi9.copy()
 
 def find_projection_theta(
     xy: np.ndarray,
@@ -223,8 +204,6 @@ def _append_case_iter(
     case_id: int,
     iteration: int,
     rho_model: int,
-    feature_version: int,
-    gradient_epsilon: float,
 ) -> int:
     indices = interface_indices(phi)
     if indices.size == 0:
@@ -235,13 +214,7 @@ def _append_case_iter(
     xy = np.column_stack((X[rows, cols], Y[rows, cols])).astype(np.float32, copy=False)
     theta_proj = find_projection_theta(xy, a, b, p)
     count = indices.shape[0]
-    phi9, features = build_raw_features(
-        phi,
-        indices,
-        h=h,
-        feature_version=feature_version,
-        gradient_epsilon=gradient_epsilon,
-    )
+    phi9, features = build_raw_features(phi, indices)
 
     store["phi9"].append(phi9)
     store["features"].append(features)
@@ -255,10 +228,10 @@ def _append_case_iter(
     return count
 
 
-def _concat_store(store: dict[str, list[np.ndarray]], *, feature_dim: int) -> dict[str, np.ndarray]:
+def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
     shapes = {
         "phi9": (0, 9),
-        "features": (0, feature_dim),
+        "features": (0, 9),
         "xy": (0, 2),
         "phi0_center": (0,),
         "hkappa_target": (0,),
@@ -284,26 +257,48 @@ def _concat_store(store: dict[str, list[np.ndarray]], *, feature_dim: int) -> di
     }
 
 def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
-    if config.rho_model is None:
-        available = ", ".join(str(item) for item in available_rho_models(config.scenarios))
-        raise ValueError(
-            "TestDataConfig.rho_model must be set for resolution-specific flower generation. "
-            f"Available rho_model values: {available}."
-        )
-    filtered_scenarios = filter_scenarios_by_rho_model(config.scenarios, config.rho_model)
-    if not filtered_scenarios:
-        available = ", ".join(str(item) for item in available_rho_models(config.scenarios))
-        raise ValueError(
-            f"No flower scenarios configured for rho_model={int(config.rho_model)}. "
-            f"Available rho_model values: {available}."
-        )
-    dataset_name = config.dataset_name or flower_dataset_name(rho_model=config.rho_model)
-    return replace(
+    base = replace(
         config,
-        rho_model=int(config.rho_model),
-        feature_version=int(config.feature_version),
+        test_iters=normalize_test_iters(config.test_iters),
+        scenarios=tuple(config.scenarios),
+    )
+    if not base.scenarios:
+        raise ValueError("At least one flower scenario must be configured.")
+
+    if base.config_source == "legacy_builtin":
+        requested_rho_model = base.requested_rho_model if base.requested_rho_model is not None else base.rho_model
+        if requested_rho_model is None:
+            available = ", ".join(str(item) for item in available_rho_models(base.scenarios))
+            raise ValueError(
+                "TestDataConfig.rho_model must be set for legacy resolution-specific flower generation. "
+                f"Available rho_model values: {available}."
+            )
+        filtered_scenarios = filter_scenarios_by_rho_model(base.scenarios, requested_rho_model)
+        if not filtered_scenarios:
+            available = ", ".join(str(item) for item in available_rho_models(base.scenarios))
+            raise ValueError(
+                f"No flower scenarios configured for rho_model={int(requested_rho_model)}. "
+                f"Available rho_model values: {available}."
+            )
+        dataset_name = base.dataset_name or flower_dataset_name(rho_model=int(requested_rho_model))
+        return replace(
+            base,
+            rho_model=int(requested_rho_model),
+            requested_rho_model=int(requested_rho_model),
+            dataset_name=dataset_name,
+            scenarios=filtered_scenarios,
+        )
+
+    unique_rho_models = available_rho_models(base.scenarios)
+    dataset_name = base.dataset_name or (
+        flower_dataset_name(rho_model=unique_rho_models[0]) if len(unique_rho_models) == 1 else DEFAULT_CUSTOM_DATASET_NAME
+    )
+    resolved_rho_model = unique_rho_models[0] if len(unique_rho_models) == 1 else None
+    return replace(
+        base,
+        rho_model=resolved_rho_model,
+        requested_rho_model=None,
         dataset_name=dataset_name,
-        scenarios=filtered_scenarios,
     )
 
 
@@ -312,6 +307,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
     output_path = Path(output) if output is not None else cfg.output_path()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cfg = replace(cfg, output_dir=output_path.parent, dataset_name=output_path.name)
+    scenario_rho_models = available_rho_models(cfg.scenarios)
 
     reinitializer = LevelSetReinitializer(
         indexing="xy",
@@ -327,10 +323,11 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
 
     print(
         "[testdata_generate] "
-        f"rho_model={cfg.rho_model} mode={cfg.mode} sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
+        f"rho_models={','.join(str(item) for item in scenario_rho_models)} mode={cfg.mode} "
+        f"sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
         f"eps_sign_factor={cfg.eps_sign_factor} RK{cfg.time_order} WENO{cfg.space_order}"
     )
-    print(f"[testdata_generate] feature_version={cfg.feature_version} output={output_path}")
+    print(f"[testdata_generate] feature_order=phi9 output={output_path}")
 
     for case_id, scenario in enumerate(cfg.scenarios):
         X, Y, h_from_grid = build_grid(scenario.L, scenario.N)
@@ -357,13 +354,11 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 case_id=case_id,
                 iteration=iteration,
                 rho_model=scenario.rho_model,
-                feature_version=cfg.feature_version,
-                gradient_epsilon=cfg.gradient_epsilon,
             )
             counts[f"{scenario.exp_id}/iter_{iteration}"] = count
             print(f"    iter={iteration:>2d} samples={count}")
 
-    arrays = _concat_store(store, feature_dim=raw_feature_dim(cfg.feature_version))
+    arrays = _concat_store(store)
     _validate_arrays(arrays, cfg)
     _write_hdf5(output_path, arrays, cfg, counts)
     print(f"[testdata_generate] wrote {arrays['features'].shape[0]} samples")
@@ -374,8 +369,8 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
     n = arrays["features"].shape[0]
     if arrays["phi9"].ndim != 2 or arrays["phi9"].shape[1] != 9:
         raise ValueError(f"phi9 must have shape (N, 9), got {arrays['phi9'].shape}.")
-    if arrays["features"].ndim != 2 or arrays["features"].shape[1] != raw_feature_dim(cfg.feature_version):
-        raise ValueError(f"features must have shape (N, {raw_feature_dim(cfg.feature_version)}), got {arrays['features'].shape}.")
+    if arrays["features"].ndim != 2 or arrays["features"].shape[1] != 9:
+        raise ValueError(f"features must have shape (N, 9), got {arrays['features'].shape}.")
     if arrays["xy"].ndim != 2 or arrays["xy"].shape[1] != 2:
         raise ValueError(f"xy must have shape (N, 2), got {arrays['xy'].shape}.")
     for key, value in arrays.items():
@@ -399,10 +394,17 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
         max_abs_err = max(max_abs_err, float(err))
     if max_abs_err > 5.0e-7:
         raise ValueError(f"phi0_center formula check failed: max_abs_err={max_abs_err}.")
-    if set(np.unique(arrays["rho_model"]).tolist()) != {int(cfg.rho_model)}:
+    actual_rho_models = set(np.unique(arrays["rho_model"]).tolist())
+    expected_rho_models = {int(scenario.rho_model) for scenario in cfg.scenarios}
+    if actual_rho_models != expected_rho_models:
         raise ValueError(
-            f"Generated dataset rho_model values {sorted(np.unique(arrays['rho_model']).tolist())} "
-            f"do not match requested rho_model={int(cfg.rho_model)}."
+            f"Generated dataset rho_model values {sorted(actual_rho_models)} "
+            f"do not match configured scenarios {sorted(expected_rho_models)}."
+        )
+    if cfg.requested_rho_model is not None and actual_rho_models != {int(cfg.requested_rho_model)}:
+        raise ValueError(
+            f"Generated dataset rho_model values {sorted(actual_rho_models)} "
+            f"do not match requested rho_model={int(cfg.requested_rho_model)}."
         )
 
 def _write_hdf5(
@@ -411,6 +413,11 @@ def _write_hdf5(
     cfg: TestDataConfig,
     counts: dict[str, int],
 ) -> None:
+    config_dict = {
+        **{key: value for key, value in asdict(cfg).items() if key not in {"output_dir", "scenarios"}},
+        "output_dir": str(cfg.output_dir),
+        "scenarios": [scenario.as_dict() for scenario in cfg.scenarios],
+    }
     attrs: dict[str, Any] = {
         "schema_version": DATASET_SCHEMA_VERSION,
         "generated_at": datetime.now().isoformat(),
@@ -424,25 +431,19 @@ def _write_hdf5(
         "sampling_rule": cfg.sampling_rule,
         "stencil_encoding": cfg.stencil_encoding,
         "target_rule": cfg.target_rule,
-        "feature_version": int(cfg.feature_version),
-        "feature_dim_raw": int(raw_feature_dim(cfg.feature_version)),
-        "feature_order": "phi9" if int(cfg.feature_version) == 1 else "phi9_nx9_ny9",
-        "gradient_epsilon": float(cfg.gradient_epsilon),
+        "feature_version": 1,
+        "feature_dim_raw": 9,
+        "feature_order": "phi9",
         "method_code": cfg.method_code,
         "output_root": str(cfg.output_dir),
+        "config_source": str(cfg.config_source),
         "scenarios_json": json.dumps([scenario.as_dict() for scenario in cfg.scenarios], ensure_ascii=True),
         "test_iters_json": json.dumps([int(item) for item in cfg.test_iters]),
         "sample_counts_json": json.dumps(counts, sort_keys=True),
-        "config_json": json.dumps(
-            {
-                **{key: value for key, value in asdict(cfg).items() if key not in {"output_dir", "scenarios"}},
-                "output_dir": str(cfg.output_dir),
-                "scenarios": [scenario.as_dict() for scenario in cfg.scenarios],
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-        ),
+        "config_json": json.dumps(config_dict, ensure_ascii=True, sort_keys=True),
     }
+    if cfg.requested_rho_model is not None:
+        attrs["requested_rho_model"] = int(cfg.requested_rho_model)
     with h5py.File(output_path, "w") as handle:
         for key, value in attrs.items():
             handle.attrs[key] = value
@@ -460,40 +461,56 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    default_cfg = TestDataConfig()
-    available = ", ".join(str(item) for item in available_rho_models(default_cfg.scenarios))
-    parser = argparse.ArgumentParser(description="Generate independent flower test data into test_data/, one rho_model per file.")
-    parser.add_argument(
+    available = ", ".join(str(item) for item in available_rho_models(legacy_flower_scenarios()))
+    parser = argparse.ArgumentParser(
+        description="Generate flower test data from legacy built-in rho_model scenarios or an external scenario JSON file."
+    )
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--rho-model",
         type=int,
-        required=True,
         help=f"Target rho_model to generate. Available values: {available}.",
+    )
+    source_group.add_argument(
+        "--scenario-config",
+        type=str,
+        default="",
+        help="Path to a JSON file that defines arbitrary flower scenarios.",
     )
     parser.add_argument(
         "--output",
         type=str,
         default="",
-        help=f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME} with the selected rho_model.",
+        help=(
+            f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME} for single-rho runs, "
+            f"or {DEFAULT_OUTPUT_DIR / DEFAULT_CUSTOM_DATASET_NAME} for multi-rho scenario configs."
+        ),
     )
     parser.add_argument(
         "--test-iters",
         type=_parse_int_tuple,
-        default=default_cfg.test_iters,
-        help="Comma-separated test iterations. Defaults to 1,2,...,20.",
+        default=None,
+        help="Comma-separated test iterations. In config-first mode, overrides the JSON value.",
     )
-    parser.add_argument("--feature-version", type=int, choices=(1, 2), default=default_cfg.feature_version)
-    parser.add_argument("--gradient-epsilon", type=float, default=default_cfg.gradient_epsilon)
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    cfg = TestDataConfig(
-        rho_model=int(args.rho_model),
-        test_iters=tuple(sorted(set(args.test_iters))),
-        feature_version=int(args.feature_version),
-        gradient_epsilon=float(args.gradient_epsilon),
-    )
+    default_cfg = TestDataConfig()
+    if args.scenario_config:
+        cfg = load_scenario_config(args.scenario_config)
+        overrides: dict[str, Any] = {}
+        if args.test_iters is not None:
+            overrides["test_iters"] = normalize_test_iters(args.test_iters)
+        if overrides:
+            cfg = replace(cfg, **overrides)
+    else:
+        cfg = TestDataConfig(
+            rho_model=int(args.rho_model),
+            test_iters=normalize_test_iters(args.test_iters if args.test_iters is not None else default_cfg.test_iters),
+            requested_rho_model=int(args.rho_model),
+        )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)
 

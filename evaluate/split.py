@@ -37,7 +37,7 @@ else:
 SPLIT_NAMES = ("train", "val", "test")
 
 
-def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str | Path, feature_stats_path: str | Path | None, device: torch.device) -> dict[str, object]:
+def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str | Path, normalization_csv_path: str | Path | None, device: torch.device) -> dict[str, object]:
     if split_name not in SPLIT_NAMES:
         raise ValueError(f"Unsupported split={split_name!r}; expected one of {SPLIT_NAMES}.")
     bundle = load_training_arrays_from_hdf5(dataset_path)
@@ -49,14 +49,14 @@ def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str
     hkappa_target = np.asarray(split["hkappa_target"], dtype=np.float64).reshape(-1)
     if phi9.ndim != 2 or phi9.shape[1] != 9:
         raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {phi9.shape}.")
-    if features.ndim != 2:
-        raise ValueError(f"Split {split_name!r} features must have shape (N, D), got {features.shape}.")
+    if features.ndim != 2 or features.shape[1] != 9:
+        raise ValueError(f"Split {split_name!r} features must have shape (N, 9), got {features.shape}.")
     if phi9.shape[0] == 0:
         raise ValueError(f"Split {split_name!r} is empty in dataset {Path(dataset_path).resolve()}.")
     model, checkpoint_meta = load_model_from_checkpoint(model_path, device=device)
-    feature_transform, feature_stats_source = resolve_feature_transform(
+    feature_transform, normalization_source = resolve_feature_transform(
         model_path=model_path,
-        explicit_path=feature_stats_path,
+        explicit_path=normalization_csv_path,
         checkpoint_meta=checkpoint_meta,
     )
     numeric = central_difference_hkappa_from_phi9(phi9)
@@ -66,7 +66,7 @@ def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str
         "split": split_name,
         "sample_count": int(phi9.shape[0]),
         "model_path": str(Path(model_path).resolve()),
-        "feature_stats_source": feature_stats_source,
+        "normalization_source": normalization_source,
         "model_type": checkpoint_meta["model_type"],
         "feature_version": int(feature_transform["feature_version"]),
         "raw_feature_dim": int(feature_transform["raw_feature_dim"]),
@@ -83,7 +83,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data", type=str, default=str(default_dataset_path()))
     parser.add_argument("--split", type=str, choices=SPLIT_NAMES, default="test")
     parser.add_argument("--model-path", type=str, default=str(default_model))
-    parser.add_argument("--feature-stats", type=str, default="")
     parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--use-swanlab", action="store_true")
@@ -101,12 +100,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    feature_stats_arg = args.feature_stats or args.normalization_csv or None
     result = evaluate_split(
         dataset_path=args.data,
         split_name=args.split,
         model_path=args.model_path,
-        feature_stats_path=feature_stats_arg,
+        normalization_csv_path=args.normalization_csv or None,
         device=device,
     )
     print("Task: 3x3 stencil features -> h*kappa")
@@ -114,7 +112,7 @@ def main() -> None:
     print(f"Split: {result['split']}")
     print(f"Samples: {result['sample_count']}")
     print(f"Checkpoint: {result['model_path']}")
-    print(f"Feature stats source: {result['feature_stats_source']}")
+    print(f"Normalization source: {result['normalization_source']}")
     print(f"Model type: {result['model_type']}")
     print(f"Feature version: {result['feature_version']}")
     print(f"Raw feature dim: {result['raw_feature_dim']}")
@@ -138,7 +136,7 @@ def main() -> None:
                 "split": result["split"],
                 "dataset_path": result["dataset_path"],
                 "model_path": result["model_path"],
-                "feature_stats_source": result["feature_stats_source"],
+                "normalization_source": result["normalization_source"],
                 "model_type": result["model_type"],
                 "sample_count": result["sample_count"],
                 "device": str(device),
