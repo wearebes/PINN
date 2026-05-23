@@ -34,6 +34,7 @@ class DataConfig:
     ellipse_sdf_newton_tol: float = 1.0e-12
     ellipse_hp_dps: int = 80
     ellipse_hp_newton_max_iter: int = 100
+    scale_h: bool = False
 
 
 @dataclass(frozen=True)
