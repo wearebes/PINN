@@ -14,10 +14,11 @@ Canonical pipeline:
 
 ```bash
 python -m train_generate.generate \
-  --output dataset/256.h5 \
+  --output dataset/266_h.h5 \
   --output-dir dataset \
-  --dataset-name 256.h5 \
-  --resolutions 256 
+  --scale-h \
+  --dataset-name 266_h.h5 \
+  --resolutions 512 
 ```
 
 ## 3. Train V1 Model
@@ -25,18 +26,17 @@ python -m train_generate.generate \
 256 baseline example with full SwanLab arguments:
 
 ```bash
-/usr/bin/time -p python -m model.train \
+python -m model.train \
   --model-type mlp \
-  --dataset-output dataset/256.h5 \
-  --output-model out/baseline_256.pt \
-  --normalization-csv out/baseline_256.csv \
-  --batch-size 256 \
+  --dataset-output dataset/256_h.h5 \
+  --output-model out/baseline_256v2.pt \
+  --normalization-csv out/baseline_256v2.csv \
   --use-swanlab \
+  --swanlab-mode cloud \
   --swanlab-project PINN \
-  --swanlab-experiment-name baseline_256 \
-  --swanlab-tags baseline,v1,rho256 \
-  --swanlab-logdir swanlog \
-  --swanlab-mode offline \
+  --swanlab-experiment-name baseline_256v2 \
+  --swanlab-tags baseline,v2,rho256 
+  
 ```
 
 For 266 or 276, replace the dataset, checkpoint, CSV, experiment name, description, and tags with the matching resolution.

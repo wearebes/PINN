@@ -478,17 +478,104 @@ def _format_metric(metric: dict[str, float], *, include_maxae: bool) -> str:
     return summary
 
 
-def _print_grouped_rows(title: str, rows: list[dict[str, Any]]) -> None:
-    print(title)
-    for row in rows:
-        key_name = next(key for key in row.keys() if key in {"iter", "case_id", "rho_model"})
-        print(f"  {key_name}={row['display']} samples={row['sample_count']}")
-        for metric_name in PRIMARY_COMPARISONS:
-            metric = row[metric_name]
-            print(f"    {metric_name}: {_format_metric(metric, include_maxae=True)}")
-        for metric_name in AUXILIARY_COMPARISONS:
-            metric = row[metric_name]
-            print(f"    {metric_name}: {_format_metric(metric, include_maxae=False)}")
+def _print_case_iter_pivot(
+    case_rows: list[dict[str, Any]],
+    *,
+    sources: tuple[str, ...] = ("numeric_vs_analytic", "model_vs_analytic"),
+) -> None:
+    from collections import defaultdict
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in case_rows:
+        grouped[str(row["case_label"])].append(row)
+
+    print("\nBy case_id (numerical / model across iters):")
+    for case_label in sorted(grouped):
+        rows = sorted(grouped[case_label], key=lambda r: int(r["iter"]))
+        total_samples = sum(int(r["sample_count"]) for r in rows)
+        print(f"\n{case_label} ({len(rows)} iters, total samples={total_samples}):")
+        for src in sources:
+            print(f"  {src}")
+            for r in rows:
+                m = r[src]
+                print(
+                    f"    iter={int(r['iter'])}  "
+                    f"MSE={float(m['mse']):.6e}  "
+                    f"MAE={float(m['mae']):.6e}  "
+                    f"MaxAE={float(m['maxae']):.6e}"
+                )
+
+
+def _print_case_angle_bins(
+    case_rows: list[dict[str, Any]],
+    *,
+    bin_deg: int = 60,
+    sources: tuple[str, ...] = ("numeric_vs_analytic", "model_vs_analytic"),
+) -> None:
+    from collections import defaultdict
+    import numpy as np
+
+    if 360 % bin_deg != 0:
+        raise ValueError(f"bin_deg must divide 360, got {bin_deg}.")
+    n_bins = 360 // bin_deg
+    edges_deg = np.arange(n_bins + 1, dtype=np.float64) * float(bin_deg)
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in case_rows:
+        grouped[str(row["case_label"])].append(row)
+
+    print(f"\nBy case_id x angle (bin width = {bin_deg} deg, aggregated across iters):")
+
+    for case_label in sorted(grouped):
+        rows = grouped[case_label]
+        theta_all = np.concatenate([np.asarray(r["theta"], dtype=np.float64) for r in rows])
+        pred_all  = np.concatenate([np.asarray(r["pred_hkappa"], dtype=np.float64) for r in rows])
+        true_all  = np.concatenate([np.asarray(r["true_hkappa"], dtype=np.float64) for r in rows])
+        numer_all = np.concatenate([np.asarray(r["numeric_hkappa"], dtype=np.float64) for r in rows])
+
+        theta_deg = np.mod(np.degrees(theta_all), 360.0)
+        bin_idx = np.minimum(
+            np.floor(theta_deg / float(bin_deg)).astype(np.int64),
+            n_bins - 1,
+        )
+
+        total_samples = int(theta_all.shape[0])
+        print(f"\n{case_label} ({len(rows)} iters, total samples={total_samples}):")
+        header = (
+            f"  {'angle bin':<14}{'N':>7}    "
+            f"{'numeric_vs_analytic (MSE / MAE / MaxAE)':<46}    "
+            f"{'model_vs_analytic (MSE / MAE / MaxAE)'}"
+        )
+        print(header)
+
+        for b in range(n_bins):
+            mask = bin_idx == b
+            n_in = int(np.count_nonzero(mask))
+            lo = int(edges_deg[b])
+            hi = int(edges_deg[b + 1])
+            bin_label = f"[{lo:>3d},{hi:>4d})"
+            if n_in == 0:
+                print(f"  {bin_label:<14}{n_in:>7}    {'(empty)':<46}    (empty)")
+                continue
+
+            stats_per_src: dict[str, tuple[float, float, float]] = {}
+            for src in sources:
+                if src == "numeric_vs_analytic":
+                    pred_arr, target_arr = numer_all[mask], true_all[mask]
+                elif src == "model_vs_analytic":
+                    pred_arr, target_arr = pred_all[mask], true_all[mask]
+                elif src == "model_vs_numeric":
+                    pred_arr, target_arr = pred_all[mask], numer_all[mask]
+                else:
+                    raise ValueError(f"Unsupported source: {src!r}")
+                m = compute_metrics(pred_arr, target_arr)
+                stats_per_src[src] = (float(m["mse"]), float(m["mae"]), float(m["maxae"]))
+
+            cells = []
+            for src in sources:
+                mse, mae, maxae = stats_per_src[src]
+                cells.append(f"MSE={mse:.3e} MAE={mae:.3e} MaxAE={maxae:.3e}")
+            print(f"  {bin_label:<14}{n_in:>7}    {cells[0]:<46}    {cells[1]}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -564,9 +651,8 @@ def main() -> None:
     for metric_name in AUXILIARY_COMPARISONS:
         metric = result[metric_name]
         print(f"{metric_name}: {_format_metric(metric, include_maxae=False)}")
-    _print_grouped_rows("By iter:", result["by_iter"])
-    _print_grouped_rows("By case_id:", result["by_case_id"])
-    _print_grouped_rows("By rho_model:", result["by_rho_model"])
+    _print_case_iter_pivot(result["cases"])
+    _print_case_angle_bins(result["cases"])
     if args.use_swanlab:
         try:
             import swanlab
