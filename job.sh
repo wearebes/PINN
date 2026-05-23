@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=geometry_3x
+#SBATCH --job-name=geometry
+#SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=32G
+#SBATCH --mem=48G
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
 set -uo pipefail
 
 # ---------- 0. 锁定值 ----------
-CUDA_MODULE="${CUDA_MODULE:-cuda/12.6}"
+CUDA_MODULE="${CUDA_MODULE:-cuda12.6}"
 CONDA_ENV="${CONDA_ENV:-pinn}"
 
 fatal() {
