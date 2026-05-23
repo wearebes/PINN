@@ -73,6 +73,14 @@ def _sanitize_name(raw: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(raw))
 
 
+def _build_hk_metric_payload(prefix: str, metric: dict[str, float]) -> dict[str, float]:
+    return {
+        f"{prefix}/MSE_hk": float(metric["mse"]),
+        f"{prefix}/MAE_hk": float(metric["mae"]),
+        f"{prefix}/MaxAE_hk": float(metric["maxae"]),
+    }
+
+
 def _render_representative_curve(case_entry: dict[str, Any]) -> Path:
     import matplotlib
 
@@ -194,75 +202,28 @@ def _build_case_summary_table_payload(
     return rows
 
 
-def _build_step_metric_payload(
-    prefix: str,
-    metric: dict[str, float],
-    *,
-    include_max_abs_err: bool,
-) -> dict[str, float]:
-    summary = _metric_summary(metric)
-    payload = {
-        f"{prefix}/rmse": float(summary["rmse"]),
-        f"{prefix}/mae": float(summary["mae"]),
-    }
-    if include_max_abs_err:
-        payload[f"{prefix}/max_abs_err"] = float(summary["max_abs_err"])
-    return payload
-
-
 def _log_swanlab_step_series(run: Any, result: dict[str, Any]) -> None:
-    for row in result["by_iter"]:
-        step = int(row["iter"])
-        payload: dict[str, float] = {}
-        payload.update(
-            _build_step_metric_payload(
-                "flower_eval/by_iter/model_vs_analytic",
-                row["model_vs_analytic"],
-                include_max_abs_err=True,
-            )
-        )
-        payload.update(
-            _build_step_metric_payload(
-                "flower_eval/by_iter/numeric_vs_analytic",
-                row["numeric_vs_analytic"],
-                include_max_abs_err=True,
-            )
-        )
-        payload.update(
-            _build_step_metric_payload(
-                "flower_eval/by_iter/model_vs_numeric",
-                row["model_vs_numeric"],
-                include_max_abs_err=False,
-            )
-        )
-        run.log(payload, step=step)
-
+    payloads_by_step: dict[int, dict[str, float | int]] = {}
     for case_row in sorted(result["cases"], key=_case_sort_key):
         step = int(case_row["iter"])
         case_key = _sanitize_name(case_row["case_label"])
-        payload = {}
+        payload = payloads_by_step.setdefault(step, {})
         payload.update(
-            _build_step_metric_payload(
-                f"flower_eval/by_case/{case_key}/model_vs_analytic",
-                case_row["model_vs_analytic"],
-                include_max_abs_err=True,
-            )
-        )
-        payload.update(
-            _build_step_metric_payload(
-                f"flower_eval/by_case/{case_key}/numeric_vs_analytic",
+            _build_hk_metric_payload(
+                f"flower_eval/numeric/case_{case_key}",
                 case_row["numeric_vs_analytic"],
-                include_max_abs_err=True,
             )
         )
         payload.update(
-            _build_step_metric_payload(
-                f"flower_eval/by_case/{case_key}/model_vs_numeric",
-                case_row["model_vs_numeric"],
-                include_max_abs_err=False,
+            _build_hk_metric_payload(
+                f"flower_eval/model/case_{case_key}",
+                case_row["model_vs_analytic"],
             )
         )
-        run.log(payload, step=step)
+        payload[f"flower_eval/case_{case_key}/N_samples"] = int(case_row["sample_count"])
+
+    for step in sorted(payloads_by_step):
+        run.log(payloads_by_step[step], step=int(step))
 
 
 def _build_case_curve_row(
