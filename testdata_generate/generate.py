@@ -100,9 +100,21 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
     return extract_stencil_values(phi, indices)
 
 
-def build_raw_features(phi: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def build_raw_features(
+    phi: np.ndarray,
+    indices: np.ndarray,
+    *,
+    scale_h: bool = False,
+    h: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     phi9 = extract_phi9(phi, indices)
-    return phi9, phi9.copy()
+    if scale_h:
+        if h is None or not (float(h) > 0.0):
+            raise ValueError(f"scale_h=True requires positive h, got {h!r}.")
+        features = (phi9 / np.float32(h)).astype(np.float32, copy=False)
+    else:
+        features = phi9.copy()
+    return phi9, features
 
 def find_projection_theta(
     xy: np.ndarray,
@@ -204,6 +216,7 @@ def _append_case_iter(
     case_id: int,
     iteration: int,
     rho_model: int,
+    scale_h: bool = False,
 ) -> int:
     indices = interface_indices(phi)
     if indices.size == 0:
@@ -214,7 +227,7 @@ def _append_case_iter(
     xy = np.column_stack((X[rows, cols], Y[rows, cols])).astype(np.float32, copy=False)
     theta_proj = find_projection_theta(xy, a, b, p)
     count = indices.shape[0]
-    phi9, features = build_raw_features(phi, indices)
+    phi9, features = build_raw_features(phi, indices, scale_h=scale_h, h=h)
 
     store["phi9"].append(phi9)
     store["features"].append(features)
@@ -354,6 +367,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 case_id=case_id,
                 iteration=iteration,
                 rho_model=scenario.rho_model,
+                scale_h=bool(cfg.scale_h),
             )
             counts[f"{scenario.exp_id}/iter_{iteration}"] = count
             print(f"    iter={iteration:>2d} samples={count}")
@@ -434,6 +448,8 @@ def _write_hdf5(
         "feature_version": 1,
         "feature_dim_raw": 9,
         "feature_order": "phi9",
+        "scale_h": bool(cfg.scale_h),
+        "feature_transform": "phi9_over_h" if cfg.scale_h else "phi9",
         "method_code": cfg.method_code,
         "output_root": str(cfg.output_dir),
         "config_source": str(cfg.config_source),
@@ -492,17 +508,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated test iterations. In config-first mode, overrides the JSON value.",
     )
+    parser.add_argument(
+        "--scale-h",
+        action="store_true",
+        default=False,
+        help=(
+            "If set, write features = phi9 / h. Default off; features == phi9. "
+            "When combined with --scenario-config, this flag (if present) overrides the JSON 'scale_h'."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    cli_scale_h_provided = any(token == "--scale-h" or token.startswith("--scale-h=") for token in sys.argv[1:])
     default_cfg = TestDataConfig()
     if args.scenario_config:
         cfg = load_scenario_config(args.scenario_config)
         overrides: dict[str, Any] = {}
         if args.test_iters is not None:
             overrides["test_iters"] = normalize_test_iters(args.test_iters)
+        if cli_scale_h_provided:
+            overrides["scale_h"] = bool(args.scale_h)
         if overrides:
             cfg = replace(cfg, **overrides)
     else:
@@ -510,6 +538,7 @@ def main() -> None:
             rho_model=int(args.rho_model),
             test_iters=normalize_test_iters(args.test_iters if args.test_iters is not None else default_cfg.test_iters),
             requested_rho_model=int(args.rho_model),
+            scale_h=bool(args.scale_h),
         )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)

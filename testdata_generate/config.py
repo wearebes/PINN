@@ -13,7 +13,7 @@ DEFAULT_DATASET_NAME = f"test_{METHOD_CODE}_rho<RHO_MODEL>.h5"
 DEFAULT_CUSTOM_DATASET_NAME = f"test_{METHOD_CODE}_custom.h5"
 DATASET_SCHEMA_VERSION = 2
 _TOP_LEVEL_REQUIRED_KEYS = frozenset({"scenarios"})
-_TOP_LEVEL_OPTIONAL_KEYS = frozenset({"dataset_name", "output_dir", "test_iters"})
+_TOP_LEVEL_OPTIONAL_KEYS = frozenset({"dataset_name", "output_dir", "test_iters", "scale_h"})
 _SCENARIO_REQUIRED_KEYS = frozenset({"exp_id", "experiment_type", "rho_model", "L", "N", "a", "b", "p"})
 _SCENARIO_OPTIONAL_KEYS = frozenset({"h"})
 
@@ -140,6 +140,7 @@ class TestDataConfig:
     scenarios: tuple[FlowerScenario, ...] = field(default_factory=legacy_flower_scenarios)
     config_source: str = "legacy_builtin"
     requested_rho_model: int | None = None
+    scale_h: bool = False
 
     def output_path(self) -> Path:
         dataset_name = self.dataset_name
@@ -205,6 +206,7 @@ def load_scenario_config(path: str | Path) -> TestDataConfig:
     output_dir_raw = raw.get("output_dir", default_cfg.output_dir)
     output_dir = Path(output_dir_raw)
     rho_model = unique_rho_models[0] if len(unique_rho_models) == 1 else None
+    scale_h = bool(raw.get("scale_h", default_cfg.scale_h))
     return TestDataConfig(
         test_iters=test_iters,
         rho_model=rho_model,
@@ -213,4 +215,5 @@ def load_scenario_config(path: str | Path) -> TestDataConfig:
         scenarios=scenarios,
         config_source=str(config_path.resolve()),
         requested_rho_model=None,
+        scale_h=scale_h,
     )
