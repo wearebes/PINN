@@ -158,6 +158,8 @@ def save_training_dataset_hdf5(
         handle.attrs["num_workers"] = int(generation_cfg.num_workers)
         handle.attrs["output_dir"] = str(Path(generation_cfg.output_dir))
         handle.attrs["dataset_name"] = str(generation_cfg.dataset_name)
+        handle.attrs["scale_h"] = bool(data_cfg.scale_h)
+        handle.attrs["feature_transform"] = "phi9_over_h" if data_cfg.scale_h else "phi9"
         handle.create_dataset("resolutions", data=np.asarray(data_cfg.resolutions, dtype=np.int32))
         handle.create_dataset("blueprints_json", data=json.dumps(bundle.get("blueprints", [])).encode("utf-8"))
         split_group = handle.create_group("split_blueprint_indices")
@@ -255,6 +257,8 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                     "ellipse_hp_newton_max_iter": int(
                         handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
                     ),
+                    "scale_h": bool(handle.attrs.get("scale_h", False)),
+                    "feature_transform": str(handle.attrs.get("feature_transform", "phi9")),
                 },
                 "generation": {
                     "generation_batch_size": int(handle.attrs.get("generation_batch_size", 0)),
@@ -325,6 +329,7 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             ellipse_hp_newton_max_iter=int(
                 handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
             ),
+            scale_h=bool(handle.attrs.get("scale_h", False)),
         )
         generation_config = normalize_generation_config(
             GenerationConfig(

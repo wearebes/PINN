@@ -227,9 +227,18 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
 def build_raw_features(
     phi: np.ndarray,
     indices: np.ndarray,
+    *,
+    scale_h: bool = False,
+    h: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     phi9 = extract_phi9(phi, indices)
-    return phi9, phi9.copy()
+    if scale_h:
+        if h is None or not (float(h) > 0.0):
+            raise ValueError(f"scale_h=True requires positive h, got {h!r}.")
+        features = (phi9 / np.float32(h)).astype(np.float32, copy=False)
+    else:
+        features = phi9.copy()
+    return phi9, features
 
 
 def _project_theta_scalar(u: float, v: float, a: float, b: float, theta0: float, *, max_iter: int, tol: float) -> float:
@@ -641,6 +650,8 @@ def sample_blueprint(
     samples: list[dict[str, np.ndarray]] = []
     rho = int(blueprint["meta"]["resolution"])
     X, Y = build_grid(rho)
+    h_blueprint = float(blueprint["params"]["h"])
+    scale_h = bool(data_config.scale_h)
     for initial_field_type in normalize_initial_field_types(data_config.initial_field_types):
         phi0 = build_phi0_grid(blueprint, initial_field_type, data_config=data_config, X=X, Y=Y)
         indices = interface_indices(phi0)
@@ -648,7 +659,7 @@ def sample_blueprint(
             raise RuntimeError(
                 f"No interface nodes found for {blueprint['meta']['blueprint_id']} with initial_field_type={initial_field_type}."
             )
-        phi9, features = build_raw_features(phi0, indices)
+        phi9, features = build_raw_features(phi0, indices, scale_h=scale_h, h=h_blueprint)
         hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
         samples.append({"phi9": phi9, "features": features, "hkappa_target": hkappa})
         if data_config.augment_sign_flip:
@@ -716,6 +727,7 @@ def generate_training_splits(
         ellipse_sdf_newton_tol=float(data_config.ellipse_sdf_newton_tol),
         ellipse_hp_dps=int(data_config.ellipse_hp_dps),
         ellipse_hp_newton_max_iter=int(data_config.ellipse_hp_newton_max_iter),
+        scale_h=bool(data_config.scale_h),
     )
     blueprints = generate_blueprints(data_config)
     split_indices = split_blueprint_indices(
@@ -825,6 +837,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ellipse-sdf-newton-tol", type=float, default=data_cfg.ellipse_sdf_newton_tol)
     parser.add_argument("--ellipse-hp-dps", type=int, default=data_cfg.ellipse_hp_dps)
     parser.add_argument("--ellipse-hp-newton-max-iter", type=int, default=data_cfg.ellipse_hp_newton_max_iter)
+    parser.add_argument(
+        "--scale-h",
+        action="store_true",
+        default=data_cfg.scale_h,
+        help="If set, write features = phi9 / h (per blueprint). Default off; features == phi9.",
+    )
     parser.add_argument("--num-workers", type=int, default=generation_cfg.num_workers)
     parser.add_argument("--generation-batch-size", type=int, default=generation_cfg.generation_batch_size)
     return parser
@@ -852,6 +870,7 @@ def main() -> None:
         ellipse_sdf_newton_tol=args.ellipse_sdf_newton_tol,
         ellipse_hp_dps=args.ellipse_hp_dps,
         ellipse_hp_newton_max_iter=args.ellipse_hp_newton_max_iter,
+        scale_h=bool(args.scale_h),
     )
     generation_config = normalize_generation_config(
         GenerationConfig(
