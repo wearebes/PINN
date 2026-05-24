@@ -1,0 +1,10 @@
+phi_index,mean,std,variance,source_split,feature_count,dataset_path
+1,0.0,0.03382282331585884,0.001143983332440257,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+2,0.0,0.026425791904330254,0.0006983224884606898,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+3,0.0,0.03384405001997948,0.0011454196646809578,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+4,0.0,0.026235995814204216,0.0006883274763822556,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+5,0.0,0.015694083645939827,0.0002463042619638145,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+6,0.0,0.026298243552446365,0.0006915976409800351,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+7,0.0,0.033763036131858826,0.0011399425566196442,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+8,0.0,0.026385489851236343,0.0006961940671317279,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5
+9,0.0,0.033841557800769806,0.0011452509788796306,train,9,/home/mail/jiaqizhang/jcy/PINN/dataset/266.h5

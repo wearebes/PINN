@@ -1,0 +1,8 @@
+[startup] job_id=2358
+[startup] run_root=/home/mail/jiaqizhang/jcy/PINN/logs/2358
+[startup] swan_root=/home/mail/jiaqizhang/jcy/PINN/swanlog/2358
+[startup] out_root=/home/mail/jiaqizhang/jcy/PINN/out/2358
+[startup] swanlab_enabled=1
+[startup] cuda_module=cuda12.6
+[startup] conda_env=pinn
+[preflight] torch=2.11.0+cu126 cuda=12.6 dev=Tesla V100-SXM2-32GB mem=34.1GB cc=7.0
