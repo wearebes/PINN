@@ -9,29 +9,18 @@ import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from evaluate.shared import (
-        central_difference_hkappa_from_phi9,
-        compute_metrics,
-        csv_to_list,
-        init_swanlab_run,
-        load_model_from_checkpoint,
-        predict_hkappa_full_batch,
-        resolve_feature_transform,
-    )
-    from model.config import default_dataset_path, default_output_model_path
-    from train_generate.io import load_training_arrays_from_hdf5
-else:
-    from .shared import (
-        central_difference_hkappa_from_phi9,
-        compute_metrics,
-        csv_to_list,
-        init_swanlab_run,
-        load_model_from_checkpoint,
-        predict_hkappa_full_batch,
-        resolve_feature_transform,
-    )
-    from model.config import default_dataset_path, default_output_model_path
-    from train_generate.io import load_training_arrays_from_hdf5
+from evaluate.shared import (
+    add_swanlab_args,
+    central_difference_hkappa_from_phi9,
+    compute_metrics,
+    csv_to_list,
+    init_swanlab_run,
+    load_model_from_checkpoint,
+    predict_hkappa_full_batch,
+    resolve_feature_transform,
+)
+from model.config import default_dataset_path, default_output_model_path
+from train_generate.io import load_training_arrays_from_hdf5
 
 
 SPLIT_NAMES = ("train", "val", "test")
@@ -47,10 +36,11 @@ def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str
     phi9 = np.asarray(split["phi9"], dtype=np.float32)
     features = np.asarray(split["features"], dtype=np.float32)
     hkappa_target = np.asarray(split["hkappa_target"], dtype=np.float64).reshape(-1)
+    raw_feature_dim = int(bundle["raw_feature_dim"])
     if phi9.ndim != 2 or phi9.shape[1] != 9:
         raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {phi9.shape}.")
-    if features.ndim != 2 or features.shape[1] != 9:
-        raise ValueError(f"Split {split_name!r} features must have shape (N, 9), got {features.shape}.")
+    if features.ndim != 2 or features.shape[1] != raw_feature_dim:
+        raise ValueError(f"Split {split_name!r} features must have shape (N, {raw_feature_dim}), got {features.shape}.")
     if phi9.shape[0] == 0:
         raise ValueError(f"Split {split_name!r} is empty in dataset {Path(dataset_path).resolve()}.")
     model, checkpoint_meta = load_model_from_checkpoint(model_path, device=device)
@@ -85,15 +75,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-path", type=str, default=str(default_model))
     parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--device", type=str, default="")
-    parser.add_argument("--use-swanlab", action="store_true")
-    parser.add_argument("--swanlab-project", type=str, default="PINN")
-    parser.add_argument("--swanlab-experiment-name", type=str, default="")
-    parser.add_argument("--swanlab-description", type=str, default="")
-    parser.add_argument("--swanlab-tags", type=str, default="")
-    parser.add_argument("--swanlab-group", type=str, default="")
-    parser.add_argument("--swanlab-workspace", type=str, default="")
-    parser.add_argument("--swanlab-logdir", type=str, default="")
-    parser.add_argument("--swanlab-mode", type=str, choices=("cloud", "local", "offline", "disabled"), default="cloud")
+    add_swanlab_args(parser)
     return parser
 
 

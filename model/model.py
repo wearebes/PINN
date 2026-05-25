@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from .config import CNN_TrainConfig, MLP_TrainConfig, TrainConfig
@@ -8,7 +9,6 @@ class HKappaStencilNet(nn.Module):
     def __init__(self, config: MLP_TrainConfig) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Flatten(),
             nn.Linear(int(config.input_dim), config.hidden_units),
             nn.ReLU(),
             nn.Linear(config.hidden_units, config.hidden_units),
@@ -22,41 +22,9 @@ class HKappaStencilNet(nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features)
 
-    def loss(self, features: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
-        prediction = self(features)
-        return nn.MSELoss()(prediction, hkappa_target)
-
     def predict_and_loss(self, features: torch.Tensor, hkappa_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         prediction = self(features)
-        loss = nn.MSELoss()(prediction, hkappa_target)
-        return prediction, loss
-
-class hkappaphi27(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(27, 140),
-            nn.ReLU(),
-            nn.Linear(140, 140),
-            nn.ReLU(),
-            nn.Linear(140, 140),
-            nn.ReLU(),
-            nn.Linear(140, 140),
-            nn.ReLU(),
-            nn.Linear(140, 1),
-        )
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.net(features)
-
-    def loss(self, features: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
-        prediction = self(features)
-        return nn.MSELoss()(prediction, hkappa_target)
-
-    def predict_and_loss(self, features: torch.Tensor, hkappa_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        prediction = self(features)
-        loss = nn.MSELoss()(prediction, hkappa_target)
-        return prediction, loss
+        return prediction, F.mse_loss(prediction, hkappa_target)
 
 class HKappaCNN(nn.Module):
     def __init__(self, config: CNN_TrainConfig) -> None:
@@ -73,14 +41,9 @@ class HKappaCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-    def loss(self, x: torch.Tensor, hkappa_target: torch.Tensor) -> torch.Tensor:
-        prediction = self(x)
-        return nn.MSELoss()(prediction, hkappa_target)
-
     def predict_and_loss(self, x: torch.Tensor, hkappa_target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         prediction = self(x)
-        loss = nn.MSELoss()(prediction, hkappa_target)
-        return prediction, loss
+        return prediction, F.mse_loss(prediction, hkappa_target)
 
 
 def create_model(config: TrainConfig) -> nn.Module:

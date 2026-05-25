@@ -14,6 +14,7 @@ h5py
 matplotlib
 tqdm
 scipy
+mpmath
 
 # Optional: enable SwanLab logging in training/evaluation.
 # swanlab

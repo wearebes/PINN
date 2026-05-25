@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import argparse
 import csv
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -11,15 +12,24 @@ import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from model.config import ModelType, create_train_config, filter_train_config_overrides
-    from model.model import create_model
-else:
-    from model.config import ModelType, create_train_config, filter_train_config_overrides
-    from model.model import create_model
+from model.config import ModelType, create_train_config, filter_train_config_overrides
+from model.model import create_model
 
 
 CHECKPOINT_FORMAT_VERSION = 1
 MODEL_CONFIG_VERSION = 1
+LEGACY_V1_BASELINE_KEYMAP = {
+    "net.1.weight": "net.0.weight",
+    "net.1.bias": "net.0.bias",
+    "net.3.weight": "net.2.weight",
+    "net.3.bias": "net.2.bias",
+    "net.5.weight": "net.4.weight",
+    "net.5.bias": "net.4.bias",
+    "net.7.weight": "net.6.weight",
+    "net.7.bias": "net.6.bias",
+    "net.9.weight": "net.8.weight",
+    "net.9.bias": "net.8.bias",
+}
 
 
 def normalization_csv_path(model_path: str | Path) -> Path:
@@ -83,8 +93,9 @@ def save_phi9_normalization_csv(path: str | Path, *, mean: np.ndarray, std: np.n
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["phi_index", "mean", "std", "variance", "source_split", "feature_count", "dataset_path"])
-        for idx in range(9):
-            writer.writerow([idx + 1, float(mean[idx]), float(std[idx]), float(std[idx] ** 2), "train", 9, str(dataset_path)])
+        feature_count = len(mean)
+        for idx in range(feature_count):
+            writer.writerow([idx + 1, float(mean[idx]), float(std[idx]), float(std[idx] ** 2), "train", feature_count, str(dataset_path)])
     return path
 
 
@@ -125,10 +136,10 @@ def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarra
             feature_counts.add(int(row["feature_count"]))
     mean = np.asarray(means, dtype=np.float32)
     std = np.asarray(stds, dtype=np.float32)
-    if mean.shape != (9,) or std.shape != (9,):
+    if mean.ndim != 1 or mean.size not in (9, 27):
         raise ValueError(
-            f"Normalization CSV {csv_path.resolve()} must describe exactly 9 stencil entries, "
-            f"got mean shape {mean.shape} and std shape {std.shape}."
+            f"Normalization CSV {csv_path.resolve()} must describe 9 (V1) or 27 (V2) features, "
+            f"got {mean.size} entries."
         )
     if np.any(~np.isfinite(mean)) or np.any(~np.isfinite(std)):
         raise ValueError(f"Normalization CSV {csv_path.resolve()} contains non-finite values.")
@@ -136,22 +147,33 @@ def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarra
         raise ValueError(f"Normalization CSV {csv_path.resolve()} contains non-positive std values.")
     if source_splits != {"train"}:
         raise ValueError(f"Normalization CSV {csv_path.resolve()} must record source_split=train, got {sorted(source_splits)}.")
-    if feature_counts != {9}:
-        raise ValueError(f"Normalization CSV {csv_path.resolve()} must record feature_count=9, got {sorted(feature_counts)}.")
+    if feature_counts not in ({9}, {27}):
+        raise ValueError(
+            f"Normalization CSV {csv_path.resolve()} must record feature_count in {{9, 27}}, got {sorted(feature_counts)}."
+        )
     return mean, std
 
 
 def build_legacy_feature_transform(mean: np.ndarray, std: np.ndarray, *, dataset_path: str | Path | None = None) -> dict[str, Any]:
+    mean_arr = _as_float32_array(mean)
+    std_arr = _as_float32_array(std)
+    raw_dim = int(mean_arr.size)
+    if raw_dim == 9:
+        fv, fo = 1, "phi9"
+    elif raw_dim == 27:
+        fv, fo = 2, "phi9+nx9+ny9"
+    else:
+        raise ValueError(f"build_legacy_feature_transform: expected 9 (V1) or 27 (V2) entries, got {raw_dim}.")
     return {
         "transform_kind": "standardize",
-        "feature_version": 1,
-        "raw_feature_dim": 9,
-        "output_dim": 9,
-        "feature_order": "phi9",
+        "feature_version": fv,
+        "raw_feature_dim": raw_dim,
+        "output_dim": raw_dim,
+        "feature_order": fo,
         "source_split": "train",
         "dataset_path": str(Path(dataset_path).resolve()) if dataset_path is not None else "",
-        "mean": _as_float32_array(mean),
-        "std": _as_float32_array(std),
+        "mean": mean_arr,
+        "std": std_arr,
     }
 
 
@@ -188,27 +210,37 @@ def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Feature transform mean/std shapes do not match raw_feature_dim.")
     if np.any(out["std"] <= 0.0):
         raise ValueError("Feature transform std must be strictly positive.")
-    if (
-        out["transform_kind"] != "standardize"
-        or out["feature_version"] != 1
-        or out["raw_feature_dim"] != 9
-        or out["output_dim"] != 9
-        or out["feature_order"] != "phi9"
-        or legacy_pca_enabled
-        or legacy_pca_dim != 9
-        or legacy_components.size != 0
-        or legacy_eigenvalues.size != 0
-    ):
+    _v1_ok = (
+        out["transform_kind"] == "standardize"
+        and out["feature_version"] == 1
+        and out["raw_feature_dim"] == 9
+        and out["output_dim"] == 9
+        and out["feature_order"] == "phi9"
+        and not legacy_pca_enabled
+        and legacy_components.size == 0
+        and legacy_eigenvalues.size == 0
+    )
+    _v2_ok = (
+        out["transform_kind"] == "standardize"
+        and out["feature_version"] == 2
+        and out["raw_feature_dim"] == 27
+        and out["output_dim"] == 27
+        and out["feature_order"] == "phi9+nx9+ny9"
+        and not legacy_pca_enabled
+        and legacy_components.size == 0
+        and legacy_eigenvalues.size == 0
+    )
+    if not (_v1_ok or _v2_ok):
         raise ValueError(
-            "Only the V1 phi9 standardization transform is supported. "
-            "PCA, 27D features, and NPZ-based V2 workflows are no longer supported."
+            "Only V1 (9D phi9 standardization) and V2 (27D phi9+nx9+ny9 standardization) "
+            "transforms are supported. PCA and NPZ-based workflows are no longer supported."
         )
     return {
         "transform_kind": "standardize",
-        "feature_version": 1,
-        "raw_feature_dim": 9,
-        "output_dim": 9,
-        "feature_order": "phi9",
+        "feature_version": out["feature_version"],
+        "raw_feature_dim": out["raw_feature_dim"],
+        "output_dim": out["output_dim"],
+        "feature_order": out["feature_order"],
         "source_split": out["source_split"],
         "dataset_path": out["dataset_path"],
         "mean": out["mean"],
@@ -229,20 +261,16 @@ def fit_feature_transform(
     if np.any(~np.isfinite(features)):
         raise ValueError("Training features contain non-finite values; cannot fit feature transform.")
     raw_dim = int(features.shape[1])
-    if raw_dim != 9:
+    if raw_dim not in (9, 27):
         raise ValueError(
-            f"V1 training requires 9D phi9 features. Got raw_feature_dim={raw_dim}; "
-            "regenerate the dataset with the V1-only pipeline."
+            f"Only 9D (V1 phi9) and 27D (V2 phi9+nx9+ny9) feature dimensions are supported "
+            f"for fitting the transform. Got raw_feature_dim={raw_dim}."
         )
     mean = np.mean(features, axis=0, dtype=np.float64).astype(np.float32)
     std = np.std(features, axis=0, dtype=np.float64).astype(np.float32)
     std = np.where(std > 0.0, std, 1.0).astype(np.float32)
     return validate_feature_transform(
-        {
-            **build_legacy_feature_transform(mean, std, dataset_path=dataset_path),
-            "raw_feature_dim": raw_dim,
-            "output_dim": raw_dim,
-        }
+        build_legacy_feature_transform(mean, std, dataset_path=dataset_path)
     )
 
 def apply_feature_transform(features: np.ndarray, transform: dict[str, Any]) -> np.ndarray:
@@ -384,9 +412,45 @@ def load_checkpoint_bundle(path: str | Path) -> dict[str, Any]:
         )
     if not isinstance(payload["state_dict"], dict):
         raise ValueError(f"Checkpoint {checkpoint_path.resolve()} has an invalid state_dict payload.")
+    payload["state_dict"], payload["state_dict_compatibility"] = remap_checkpoint_state_dict(
+        model_type=str(payload["model_type"]),
+        state_dict=payload["state_dict"],
+        checkpoint_path=checkpoint_path,
+    )
     if "feature_transform" in payload and payload["feature_transform"] is not None:
         payload["feature_transform"] = validate_feature_transform(payload["feature_transform"])
     return payload
+
+
+def remap_checkpoint_state_dict(
+    *,
+    model_type: str,
+    state_dict: dict[str, Any],
+    checkpoint_path: str | Path,
+) -> tuple[dict[str, Any], str]:
+    if str(model_type) != "mlp":
+        return state_dict, "native"
+    checkpoint_path = Path(checkpoint_path)
+    key_set = set(str(key) for key in state_dict.keys())
+    native_key_set = set(LEGACY_V1_BASELINE_KEYMAP.values())
+    legacy_key_set = set(LEGACY_V1_BASELINE_KEYMAP.keys())
+    if key_set == native_key_set:
+        return state_dict, "native"
+    if key_set == legacy_key_set:
+        return (
+            {
+                LEGACY_V1_BASELINE_KEYMAP[str(key)]: value
+                for key, value in state_dict.items()
+            },
+            "legacy_v1_baseline_remapped",
+        )
+    if key_set & legacy_key_set:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path.resolve()} uses an unsupported historical MLP state_dict layout. "
+            "Supported layouts are the current native keys "
+            f"{sorted(native_key_set)} or the legacy V1 baseline keys {sorted(legacy_key_set)}."
+        )
+    return state_dict, "native"
 
 
 def load_model_from_checkpoint(model_path: str | Path, *, device: torch.device) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -412,6 +476,7 @@ def load_model_from_checkpoint(model_path: str | Path, *, device: torch.device) 
         "dropped_model_config_keys": list(normalized["dropped_model_config_keys"]),
         "model_config_version": int(normalized["model_config_version"]),
         "feature_transform": payload.get("feature_transform"),
+        "state_dict_compatibility": str(payload.get("state_dict_compatibility", "native")),
     }
 
 
@@ -431,6 +496,24 @@ def predict_hkappa_full_batch(
 
 def csv_to_list(raw: str) -> list[str]:
     return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def add_swanlab_args(parser: argparse.ArgumentParser) -> None:
+    """Add the standard SwanLab CLI argument group to a parser."""
+    parser.add_argument("--use-swanlab", action="store_true")
+    parser.add_argument("--swanlab-project", type=str, default="PINN")
+    parser.add_argument("--swanlab-experiment-name", type=str, default="")
+    parser.add_argument("--swanlab-description", type=str, default="")
+    parser.add_argument("--swanlab-tags", type=str, default="")
+    parser.add_argument("--swanlab-group", type=str, default="")
+    parser.add_argument("--swanlab-workspace", type=str, default="")
+    parser.add_argument("--swanlab-logdir", type=str, default="")
+    parser.add_argument(
+        "--swanlab-mode",
+        type=str,
+        choices=("cloud", "local", "offline", "disabled"),
+        default="cloud",
+    )
 
 
 def init_swanlab_run(

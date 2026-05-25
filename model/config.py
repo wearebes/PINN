@@ -18,12 +18,12 @@ def default_output_model_path() -> Path:
 
 
 @dataclass(frozen=True)
-class MLP_TrainConfig:
-    hidden_units: int = 128
+class _BaseTrainConfig:
+    """Shared training hyperparameters; do not instantiate directly."""
+
     lr: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
-    batch_size: int = 256
     seed: int = 42
     compile_mode: str = "reduce-overhead"
     profile_cuda_timing: bool = False
@@ -34,20 +34,16 @@ class MLP_TrainConfig:
 
 
 @dataclass(frozen=True)
-class CNN_TrainConfig:
+class MLP_TrainConfig(_BaseTrainConfig):
+    hidden_units: int = 128
+    batch_size: int = 256
+
+
+@dataclass(frozen=True)
+class CNN_TrainConfig(_BaseTrainConfig):
     kernel_size: int = 3
     padding: int = 1
-    lr: float = 1.0e-4
-    max_epochs: int = 1000
-    patience: int = 30
     batch_size: int = 204800
-    seed: int = 42
-    compile_mode: str = "reduce-overhead"
-    profile_cuda_timing: bool = False
-    input_dim: int = 9
-    raw_feature_dim: int = 9
-    dataset_path: Path = field(default_factory=default_dataset_path)
-    output_model_path: Path = field(default_factory=default_output_model_path)
 
 
 TrainConfig = Union[MLP_TrainConfig, CNN_TrainConfig]

@@ -15,11 +15,8 @@ from tqdm.auto import tqdm
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from train_generate.config import DataConfig, GenerationConfig
-    from train_generate.io import dataset_manifest_path, normalize_generation_config, save_training_dataset_hdf5
-else:
-    from .config import DataConfig, GenerationConfig
-    from .io import dataset_manifest_path, normalize_generation_config, save_training_dataset_hdf5
+from train_generate.config import DataConfig, GenerationConfig
+from train_generate.io import dataset_manifest_path, normalize_generation_config, save_training_dataset_hdf5
 
 
 SUPPORTED_INITIAL_FIELD_TYPES = {"sdf", "nonsdf"}
@@ -199,10 +196,11 @@ def interface_indices(phi: np.ndarray) -> np.ndarray:
     mask[ix + 1, jx] = True
     mask[iy, jy] = True
     mask[iy, jy + 1] = True
-    mask[0, :] = False
-    mask[-1, :] = False
-    mask[:, 0] = False
-    mask[:, -1] = False
+    # Exclude 2 boundary layers so ±2 gradient accesses (for extract_grad9) stay in bounds.
+    mask[:2, :] = False
+    mask[-2:, :] = False
+    mask[:, :2] = False
+    mask[:, -2:] = False
     rows, cols = np.where(mask)
     if rows.size == 0:
         return np.zeros((0, 2), dtype=np.int64)
@@ -222,6 +220,50 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
     row_idx = rows[:, None] + _PHI9_ROW_OFFSETS.reshape(1, 9)
     col_idx = cols[:, None] + _PHI9_COL_OFFSETS.reshape(1, 9)
     return np.asarray(phi[row_idx, col_idx], dtype=np.float32)
+
+
+def extract_grad9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Compute normalised gradient direction at each of the 9 stencil positions.
+
+    For every interface node and every stencil position k, uses central differences
+    on the *full* phi field (not just the 3×3 patch) to compute (dx, dy) proportional
+    to (∂φ/∂x, ∂φ/∂y) at that grid point, then normalises to unit length.
+
+    Requires all interface nodes to sit at least 2 grid cells from the domain boundary
+    (guaranteed by the 2-layer exclusion in ``interface_indices``).
+
+    Returns
+    -------
+    np.ndarray, shape (N, 9, 2), dtype float32
+        result[:, k, 0] = nx_k  (normalised x-component of gradient at stencil point k)
+        result[:, k, 1] = ny_k  (normalised y-component of gradient at stencil point k)
+    """
+    if indices.size == 0:
+        return np.zeros((0, 9, 2), dtype=np.float32)
+    rows = indices[:, 0]
+    cols = indices[:, 1]
+    nrows, ncols = phi.shape
+    grad9 = np.empty((len(rows), 9, 2), dtype=np.float32)
+    for k in range(9):
+        dr = int(_PHI9_ROW_OFFSETS[k])
+        dc = int(_PHI9_COL_OFFSETS[k])
+        rk = rows + dr   # row of stencil point k for every node
+        ck = cols + dc   # col of stencil point k for every node
+        assert np.all(rk - 1 >= 0) and np.all(rk + 1 < nrows), (
+            f"extract_grad9: row access out of bounds for stencil k={k} (dr={dr}). "
+            "Interface nodes must be at least 2 rows from the domain boundary."
+        )
+        assert np.all(ck - 1 >= 0) and np.all(ck + 1 < ncols), (
+            f"extract_grad9: col access out of bounds for stencil k={k} (dc={dc}). "
+            "Interface nodes must be at least 2 cols from the domain boundary."
+        )
+        dx = phi[rk + 1, ck] - phi[rk - 1, ck]   # ∝ ∂φ/∂x at stencil position k
+        dy = phi[rk, ck + 1] - phi[rk, ck - 1]   # ∝ ∂φ/∂y at stencil position k
+        mag = np.sqrt(dx**2 + dy**2)
+        safe_mag = np.where(mag > 0.0, mag, 1.0)  # protect against zero-gradient
+        grad9[:, k, 0] = (dx / safe_mag).astype(np.float32)
+        grad9[:, k, 1] = (dy / safe_mag).astype(np.float32)
+    return grad9
 
 
 def build_raw_features(
@@ -660,9 +702,16 @@ def sample_blueprint(
                 f"No interface nodes found for {blueprint['meta']['blueprint_id']} with initial_field_type={initial_field_type}."
             )
         phi9, features = build_raw_features(phi0, indices, scale_h=scale_h, h=h_blueprint)
+        if data_config.augment_gradient:
+            grad9 = extract_grad9(phi0, indices)  # (N, 9, 2)
+            # Layout B: [phi9_features (9) | nx9 (9) | ny9 (9)] → 27D
+            features = np.concatenate(
+                [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+            ).astype(np.float32, copy=False)
         hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
         samples.append({"phi9": phi9, "features": features, "hkappa_target": hkappa})
         if data_config.augment_sign_flip:
+            # grad(-φ) = -grad(φ), so normalised direction also negates → negate all 27 dims
             samples.append({"phi9": -phi9, "features": -features, "hkappa_target": -hkappa})
     return samples
 
@@ -679,11 +728,11 @@ def _sample_blueprint_task(task: tuple[int, str, dict[str, Any], DataConfig]) ->
     return blueprint_idx, split_name, samples
 
 
-def concat_split_samples(items: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
+def concat_split_samples(items: list[dict[str, np.ndarray]], *, feature_dim: int = 9) -> dict[str, np.ndarray]:
     if not items:
         return {
             "phi9": np.zeros((0, 9), dtype=np.float32),
-            "features": np.zeros((0, 9), dtype=np.float32),
+            "features": np.zeros((0, feature_dim), dtype=np.float32),
             "hkappa_target": np.zeros((0, 1), dtype=np.float32),
         }
     return {
@@ -713,6 +762,7 @@ def generate_training_splits(
         variations=int(data_config.variations),
         initial_field_types=normalize_initial_field_types(data_config.initial_field_types),
         augment_sign_flip=bool(data_config.augment_sign_flip),
+        augment_gradient=bool(data_config.augment_gradient),
         train_fraction=float(data_config.train_fraction),
         val_fraction=float(data_config.val_fraction),
         shape_types=normalize_shape_types(data_config.shape_types),
@@ -761,7 +811,8 @@ def generate_training_splits(
                 progress.update(1)
     progress.close()
 
-    splits = {name: concat_split_samples(items) for name, items in split_samples.items()}
+    feature_dim = 27 if data_config.augment_gradient else 9
+    splits = {name: concat_split_samples(items, feature_dim=feature_dim) for name, items in split_samples.items()}
     sizes = {name: int(split["phi9"].shape[0]) for name, split in splits.items()}
     split_shape_blueprint_counts = {
         name: _count_shapes_for_indices(blueprints, ids)
@@ -823,6 +874,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=data_cfg.augment_sign_flip,
         help="Emit both (phi9, hkappa_target) and (-phi9, -hkappa_target) for each generated sample.",
     )
+    parser.add_argument(
+        "--augment-gradient",
+        action=argparse.BooleanOptionalAction,
+        default=data_cfg.augment_gradient,
+        help=(
+            "Append per-node normalised gradient directions (nx9, ny9) to phi9 features, "
+            "yielding 27D features with layout [phi9 | nx9 | ny9]. "
+            "Gradient direction also negates under sign-flip augmentation."
+        ),
+    )
     parser.add_argument("--shape-types", type=str, default=",".join(data_cfg.shape_types))
     parser.add_argument("--train-fraction", type=float, default=data_cfg.train_fraction)
     parser.add_argument("--val-fraction", type=float, default=data_cfg.val_fraction)
@@ -856,6 +917,7 @@ def main() -> None:
         variations=args.variations,
         initial_field_types=normalize_initial_field_types(_parse_str_tuple(str(args.initial_field_types))),
         augment_sign_flip=bool(args.augment_sign_flip),
+        augment_gradient=bool(args.augment_gradient),
         train_fraction=args.train_fraction,
         val_fraction=args.val_fraction,
         shape_types=normalize_shape_types(_parse_str_tuple(str(args.shape_types))),

@@ -15,31 +15,26 @@ from torch import nn
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from evaluate.shared import (
-        apply_feature_transform,
-        csv_to_list,
-        fit_feature_transform,
-        init_swanlab_run,
-        normalization_csv_path,
-        save_checkpoint_bundle,
-        save_feature_stats,
-    )
-    from model.config import CNN_TrainConfig, MLP_TrainConfig, ModelType, create_train_config, default_dataset_path, default_output_model_path
-    from model.model import count_parameters, create_model
-    from train_generate.io import load_training_arrays_from_hdf5
-else:
-    from evaluate.shared import (
-        apply_feature_transform,
-        csv_to_list,
-        fit_feature_transform,
-        init_swanlab_run,
-        normalization_csv_path,
-        save_checkpoint_bundle,
-        save_feature_stats,
-    )
-    from .config import CNN_TrainConfig, MLP_TrainConfig, ModelType, create_train_config, default_dataset_path, default_output_model_path
-    from .model import count_parameters, create_model
-    from train_generate.io import load_training_arrays_from_hdf5
+from evaluate.shared import (
+    add_swanlab_args,
+    apply_feature_transform,
+    csv_to_list,
+    fit_feature_transform,
+    init_swanlab_run,
+    normalization_csv_path,
+    save_checkpoint_bundle,
+    save_feature_stats,
+)
+from model.config import (
+    CNN_TrainConfig,
+    MLP_TrainConfig,
+    ModelType,
+    create_train_config,
+    default_dataset_path,
+    default_output_model_path,
+)
+from model.model import count_parameters, create_model
+from train_generate.io import load_training_arrays_from_hdf5
 
 
 TRAIN_SPLIT_NAMES = ("train", "val")
@@ -79,8 +74,11 @@ def _validate_split(split_name: str, split: dict[str, Any], *, require_phi9: boo
     if require_phi9:
         if split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9:
             raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
-    if split["features"].ndim != 2 or split["features"].shape[1] != 9:
-        raise ValueError(f"Split {split_name!r} features must have shape (N, 9), got {split['features'].shape}.")
+    feature_dim = int(split["features"].shape[1]) if split["features"].ndim == 2 else -1
+    if split["features"].ndim != 2 or feature_dim not in (9, 27):
+        raise ValueError(
+            f"Split {split_name!r} features must have shape (N, 9) or (N, 27), got {split['features'].shape}."
+        )
     sample_count = int(split["features"].shape[0])
     if sample_count == 0:
         raise ValueError(f"Split {split_name!r} is empty and cannot be used for training.")
@@ -113,7 +111,9 @@ def build_torch_splits(dataset_bundle: dict[str, Any], *, device: torch.device) 
     for split_name, split in dataset_bundle["splits"].items():
         tensors: dict[str, torch.Tensor] = {}
         for field_name in TRAINING_FIELD_NAMES:
-            arr = np.asarray(split[field_name], dtype=np.float32)
+            arr = split[field_name]
+            if not (isinstance(arr, np.ndarray) and arr.dtype == np.float32):
+                arr = np.asarray(arr, dtype=np.float32)
             t = torch.from_numpy(arr)
             if device.type == "cuda":
                 try:
@@ -409,15 +409,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience", type=int, default=mlp_defaults.patience)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--seed", type=int, default=mlp_defaults.seed)
-    parser.add_argument("--use-swanlab", action="store_true")
-    parser.add_argument("--swanlab-project", type=str, default="PINN")
-    parser.add_argument("--swanlab-experiment-name", type=str, default="")
-    parser.add_argument("--swanlab-description", type=str, default="")
-    parser.add_argument("--swanlab-tags", type=str, default="")
-    parser.add_argument("--swanlab-group", type=str, default="")
-    parser.add_argument("--swanlab-workspace", type=str, default="")
-    parser.add_argument("--swanlab-logdir", type=str, default="")
-    parser.add_argument("--swanlab-mode", type=str, choices=("cloud", "local", "offline", "disabled"), default="cloud")
+    add_swanlab_args(parser)
     parser.add_argument("--phase-log-path", type=str, default="")
     parser.add_argument("--disable-amp", action="store_true")
     parser.add_argument("--disable-compile", action="store_true")
@@ -427,7 +419,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()   #传递参数
+    args = build_arg_parser().parse_args()
     dataset_path = Path(args.dataset_output)
     mlp_defaults = MLP_TrainConfig()
     cnn_defaults = CNN_TrainConfig()
@@ -436,9 +428,10 @@ def main() -> None:
     raw_bundle = load_training_arrays_from_hdf5(dataset_path)
     validate_training_splits(raw_bundle)
     raw_feature_dim = int(raw_bundle["splits"]["train"]["features"].shape[1])
-    if raw_feature_dim != 9:
+    if model_type == "cnn" and raw_feature_dim != 9:
         raise ValueError(
-            f"Training requires a V1 phi9 dataset with 9D features, got raw_feature_dim={raw_feature_dim}."
+            f"CNN training requires a V1 phi9 dataset with 9D features, got raw_feature_dim={raw_feature_dim}. "
+            "Use --model-type mlp for 27D gradient-augmented (V2) datasets."
         )
     feature_transform = fit_feature_transform(
         raw_bundle["splits"]["train"]["features"],

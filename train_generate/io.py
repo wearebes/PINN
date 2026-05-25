@@ -11,8 +11,8 @@ import numpy as np
 from .config import DataConfig, GenerationConfig, default_dataset_name
 
 
-DATASET_FORMAT_VERSION = 5
-SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4, 5}
+DATASET_FORMAT_VERSION = 6
+SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4, 5, 6}
 FIELD_ORDER = ("phi9", "features", "hkappa_target")
 FIELD_DTYPES = {
     "phi9": np.float32,
@@ -130,16 +130,26 @@ def save_training_dataset_hdf5(
     with h5py.File(output_path, "w") as handle:
         data_cfg = bundle["config"]
         raw_feature_dim = int(bundle["splits"]["train"]["features"].shape[1]) if "train" in bundle["splits"] else 9
-        if raw_feature_dim != 9:
-            raise ValueError(f"V1 training datasets must store 9D phi9 features, got raw_feature_dim={raw_feature_dim}.")
+        if raw_feature_dim == 9:
+            _feature_version = 1
+            _feature_order = "phi9"
+        elif raw_feature_dim == 27:
+            _feature_version = 2
+            _feature_order = "phi9+nx9+ny9"
+        else:
+            raise ValueError(
+                f"Only 9D (V1) and 27D (V2) feature dimensions are supported; "
+                f"got raw_feature_dim={raw_feature_dim}."
+            )
         handle.attrs["dataset_format_version"] = DATASET_FORMAT_VERSION
         handle.attrs["geometry_seed"] = int(data_cfg.geometry_seed)
         handle.attrs["variations"] = int(data_cfg.variations)
         handle.attrs["initial_field_types_json"] = json.dumps(list(data_cfg.initial_field_types))
         handle.attrs["augment_sign_flip"] = bool(data_cfg.augment_sign_flip)
-        handle.attrs["feature_version"] = 1
-        handle.attrs["feature_dim_raw"] = 9
-        handle.attrs["feature_order"] = "phi9"
+        handle.attrs["augment_gradient"] = bool(data_cfg.augment_gradient)
+        handle.attrs["feature_version"] = _feature_version
+        handle.attrs["feature_dim_raw"] = raw_feature_dim
+        handle.attrs["feature_order"] = _feature_order
         handle.attrs["shape_types_json"] = json.dumps(list(data_cfg.shape_types))
         handle.attrs["train_fraction"] = float(data_cfg.train_fraction)
         handle.attrs["val_fraction"] = float(data_cfg.val_fraction)
@@ -271,83 +281,146 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
         }
 
 
+def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
+    """Parse config/blueprint metadata shared by both load functions."""
+    dataset_format_version = int(handle.attrs.get("dataset_format_version", 0))
+    if dataset_format_version not in SUPPORTED_DATASET_FORMAT_VERSIONS:
+        raise ValueError(
+            f"Dataset format version {dataset_format_version} is incompatible with the current stencil pipeline. "
+            f"Supported versions are {sorted(SUPPORTED_DATASET_FORMAT_VERSIONS)}; "
+            f"regenerate the HDF5 dataset to get dataset_format_version={DATASET_FORMAT_VERSION}."
+        )
+    raw_initial_field_types = handle.attrs.get("initial_field_types_json", '["sdf", "nonsdf"]')
+    if isinstance(raw_initial_field_types, bytes):
+        raw_initial_field_types = raw_initial_field_types.decode("utf-8")
+    raw_shape_types = handle.attrs.get("shape_types_json", '["circle"]')
+    if isinstance(raw_shape_types, bytes):
+        raw_shape_types = raw_shape_types.decode("utf-8")
+    feature_version = int(handle.attrs.get("feature_version", 1))
+    raw_feature_dim = int(handle.attrs.get("feature_dim_raw", 9))
+    feature_order = str(handle.attrs.get("feature_order", "phi9"))
+    _v1_ok = feature_version == 1 and raw_feature_dim == 9 and feature_order == "phi9"
+    _v2_ok = feature_version == 2 and raw_feature_dim == 27 and feature_order == "phi9+nx9+ny9"
+    if not (_v1_ok or _v2_ok):
+        raise ValueError(
+            f"Dataset {h5_path.resolve()} has an unsupported feature contract: "
+            f"feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
+            "Supported: V1 (version=1, dim=9, order='phi9') or "
+            "V2 (version=2, dim=27, order='phi9+nx9+ny9'). "
+            "Regenerate the dataset with the current train_generate pipeline."
+        )
+    data_config = DataConfig(
+        resolutions=tuple(int(item) for item in handle["resolutions"][:]),
+        geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
+        variations=int(handle.attrs.get("variations", DataConfig().variations)),
+        initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
+        augment_sign_flip=bool(handle.attrs.get("augment_sign_flip", False)),
+        augment_gradient=bool(handle.attrs.get("augment_gradient", False)),
+        shape_types=tuple(json.loads(str(raw_shape_types))),
+        train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
+        val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),
+        ellipse_num_a=int(handle.attrs.get("ellipse_num_a", DataConfig().ellipse_num_a)),
+        ellipse_variations_per_a=int(
+            handle.attrs.get("ellipse_variations_per_a", DataConfig().ellipse_variations_per_a)
+        ),
+        ellipse_axis_ratio_min=float(
+            handle.attrs.get("ellipse_axis_ratio_min", DataConfig().ellipse_axis_ratio_min)
+        ),
+        ellipse_axis_ratio_max=float(
+            handle.attrs.get("ellipse_axis_ratio_max", DataConfig().ellipse_axis_ratio_max)
+        ),
+        ellipse_rotation_min=float(handle.attrs.get("ellipse_rotation_min", DataConfig().ellipse_rotation_min)),
+        ellipse_rotation_max=float(handle.attrs.get("ellipse_rotation_max", DataConfig().ellipse_rotation_max)),
+        ellipse_a_min_factor=float(handle.attrs.get("ellipse_a_min_factor", DataConfig().ellipse_a_min_factor)),
+        ellipse_sdf_newton_max_iter=int(
+            handle.attrs.get("ellipse_sdf_newton_max_iter", DataConfig().ellipse_sdf_newton_max_iter)
+        ),
+        ellipse_sdf_newton_tol=float(handle.attrs.get("ellipse_sdf_newton_tol", DataConfig().ellipse_sdf_newton_tol)),
+        ellipse_hp_dps=int(handle.attrs.get("ellipse_hp_dps", DataConfig().ellipse_hp_dps)),
+        ellipse_hp_newton_max_iter=int(
+            handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
+        ),
+        scale_h=bool(handle.attrs.get("scale_h", False)),
+    )
+    generation_config = normalize_generation_config(
+        GenerationConfig(
+            num_workers=int(handle.attrs.get("num_workers", GenerationConfig().num_workers)),
+            generation_batch_size=int(handle.attrs.get("generation_batch_size", GenerationConfig().generation_batch_size)),
+            output_dir=Path(str(handle.attrs.get("output_dir", h5_path.parent))),
+            dataset_name=str(handle.attrs.get("dataset_name", h5_path.name)),
+        )
+    )
+    raw_blueprints = handle["blueprints_json"][()]
+    if isinstance(raw_blueprints, bytes):
+        raw_blueprints = raw_blueprints.decode("utf-8")
+    blueprints = json.loads(str(raw_blueprints))
+    split_blueprint_indices = {
+        name: [int(item) for item in handle["split_blueprint_indices"][name][:]]
+        for name in ("train", "val", "test")
+        if "split_blueprint_indices" in handle and name in handle["split_blueprint_indices"]
+    }
+    shape_types_in_blueprints = sorted({str(bp["meta"].get("shape_type", "circle")) for bp in blueprints})
+    split_shape_blueprint_counts = {
+        name: {
+            shape_type: int(sum(
+                1 for idx in ids
+                if str(blueprints[idx]["meta"].get("shape_type", "circle")) == shape_type
+            ))
+            for shape_type in shape_types_in_blueprints
+        }
+        for name, ids in split_blueprint_indices.items()
+    }
+    return {
+        "feature_version": feature_version,
+        "raw_feature_dim": raw_feature_dim,
+        "feature_order": feature_order,
+        "data_config": data_config,
+        "generation_config": generation_config,
+        "blueprints": blueprints,
+        "split_blueprint_indices": split_blueprint_indices,
+        "split_shape_blueprint_counts": split_shape_blueprint_counts,
+    }
+
+
+def load_training_metadata_from_hdf5(path: str | Path) -> dict[str, Any]:
+    h5_path = Path(path)
+    if not h5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {h5_path.resolve()}")
+
+    with h5py.File(h5_path, "r") as handle:
+        meta = _parse_hdf5_metadata(handle, h5_path)
+        split_sizes: dict[str, int] = {}
+        for split_name in ("train", "val", "test"):
+            if split_name not in handle:
+                continue
+            group = handle[split_name]
+            size_field = "features" if "features" in group else "phi9"
+            split_sizes[split_name] = int(group[size_field].shape[0])
+
+    split_blueprint_indices = meta["split_blueprint_indices"]
+    blueprints = meta["blueprints"]
+    return {
+        "config": meta["data_config"],
+        "generation_config": meta["generation_config"],
+        "blueprints": blueprints,
+        "split_blueprint_indices": split_blueprint_indices,
+        "split_blueprint_counts": {name: len(ids) for name, ids in split_blueprint_indices.items()},
+        "split_shape_blueprint_counts": meta["split_shape_blueprint_counts"],
+        "feature_version": meta["feature_version"],
+        "raw_feature_dim": meta["raw_feature_dim"],
+        "feature_order": meta["feature_order"],
+        "sizes": split_sizes,
+    }
+
+
 def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
     h5_path = Path(path)
     if not h5_path.exists():
         raise FileNotFoundError(f"HDF5 file not found: {h5_path.resolve()}")
 
     with h5py.File(h5_path, "r") as handle:
-        dataset_format_version = int(handle.attrs.get("dataset_format_version", 0))
-        if dataset_format_version not in SUPPORTED_DATASET_FORMAT_VERSIONS:
-            raise ValueError(
-                f"Dataset format version {dataset_format_version} is incompatible with the current stencil pipeline. "
-                f"Supported versions are {sorted(SUPPORTED_DATASET_FORMAT_VERSIONS)}; "
-                f"regenerate the HDF5 dataset to get dataset_format_version={DATASET_FORMAT_VERSION}."
-            )
-        raw_initial_field_types = handle.attrs.get("initial_field_types_json", '["sdf", "nonsdf"]')
-        if isinstance(raw_initial_field_types, bytes):
-            raw_initial_field_types = raw_initial_field_types.decode("utf-8")
-        raw_shape_types = handle.attrs.get("shape_types_json", '["circle"]')
-        if isinstance(raw_shape_types, bytes):
-            raw_shape_types = raw_shape_types.decode("utf-8")
-        feature_version = int(handle.attrs.get("feature_version", 1))
-        raw_feature_dim = int(handle.attrs.get("feature_dim_raw", 9))
-        feature_order = str(handle.attrs.get("feature_order", "phi9"))
-        if feature_version != 1 or raw_feature_dim != 9 or feature_order != "phi9":
-            raise ValueError(
-                f"Dataset {h5_path.resolve()} is not a supported V1 phi9 dataset. "
-                f"Got feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
-                "Regenerate the dataset with the V1-only train_generate pipeline."
-            )
-        data_config = DataConfig(
-            resolutions=tuple(int(item) for item in handle["resolutions"][:]),
-            geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
-            variations=int(handle.attrs.get("variations", DataConfig().variations)),
-            initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
-            augment_sign_flip=bool(handle.attrs.get("augment_sign_flip", False)),
-            shape_types=tuple(json.loads(str(raw_shape_types))),
-            train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
-            val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),
-            ellipse_num_a=int(handle.attrs.get("ellipse_num_a", DataConfig().ellipse_num_a)),
-            ellipse_variations_per_a=int(
-                handle.attrs.get("ellipse_variations_per_a", DataConfig().ellipse_variations_per_a)
-            ),
-            ellipse_axis_ratio_min=float(
-                handle.attrs.get("ellipse_axis_ratio_min", DataConfig().ellipse_axis_ratio_min)
-            ),
-            ellipse_axis_ratio_max=float(
-                handle.attrs.get("ellipse_axis_ratio_max", DataConfig().ellipse_axis_ratio_max)
-            ),
-            ellipse_rotation_min=float(handle.attrs.get("ellipse_rotation_min", DataConfig().ellipse_rotation_min)),
-            ellipse_rotation_max=float(handle.attrs.get("ellipse_rotation_max", DataConfig().ellipse_rotation_max)),
-            ellipse_a_min_factor=float(handle.attrs.get("ellipse_a_min_factor", DataConfig().ellipse_a_min_factor)),
-            ellipse_sdf_newton_max_iter=int(
-                handle.attrs.get("ellipse_sdf_newton_max_iter", DataConfig().ellipse_sdf_newton_max_iter)
-            ),
-            ellipse_sdf_newton_tol=float(handle.attrs.get("ellipse_sdf_newton_tol", DataConfig().ellipse_sdf_newton_tol)),
-            ellipse_hp_dps=int(handle.attrs.get("ellipse_hp_dps", DataConfig().ellipse_hp_dps)),
-            ellipse_hp_newton_max_iter=int(
-                handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
-            ),
-            scale_h=bool(handle.attrs.get("scale_h", False)),
-        )
-        generation_config = normalize_generation_config(
-            GenerationConfig(
-                num_workers=int(handle.attrs.get("num_workers", GenerationConfig().num_workers)),
-                generation_batch_size=int(handle.attrs.get("generation_batch_size", GenerationConfig().generation_batch_size)),
-                output_dir=Path(str(handle.attrs.get("output_dir", h5_path.parent))),
-                dataset_name=str(handle.attrs.get("dataset_name", h5_path.name)),
-            )
-        )
-        raw_blueprints = handle["blueprints_json"][()]
-        if isinstance(raw_blueprints, bytes):
-            raw_blueprints = raw_blueprints.decode("utf-8")
-        blueprints = json.loads(str(raw_blueprints))
-        split_blueprint_indices = {
-            name: [int(item) for item in handle["split_blueprint_indices"][name][:]]
-            for name in ("train", "val", "test")
-            if "split_blueprint_indices" in handle and name in handle["split_blueprint_indices"]
-        }
+        meta = _parse_hdf5_metadata(handle, h5_path)
+        raw_feature_dim = meta["raw_feature_dim"]
         splits: dict[str, dict[str, np.ndarray]] = {}
         for split_name in ("train", "val", "test"):
             if split_name not in handle:
@@ -362,9 +435,9 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             features = np.asarray(group["features"][:], dtype=np.float32) if "features" in group else phi9.copy()
             if phi9.ndim != 2 or phi9.shape[1] != 9:
                 raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {phi9.shape}.")
-            if features.ndim != 2 or features.shape[1] != 9:
+            if features.ndim != 2 or features.shape[1] != raw_feature_dim:
                 raise ValueError(
-                    f"Split {split_name!r} features must have shape (N, 9) for the V1 pipeline, got {features.shape}."
+                    f"Split {split_name!r} features must have shape (N, {raw_feature_dim}), got {features.shape}."
                 )
             splits[split_name] = {
                 "phi9": phi9,
@@ -372,21 +445,18 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
                 "hkappa_target": np.asarray(group["hkappa_target"][:], dtype=np.float32),
             }
 
+    split_blueprint_indices = meta["split_blueprint_indices"]
+    blueprints = meta["blueprints"]
     return {
-        "config": data_config,
-        "generation_config": generation_config,
+        "config": meta["data_config"],
+        "generation_config": meta["generation_config"],
         "blueprints": blueprints,
         "split_blueprint_indices": split_blueprint_indices,
         "split_blueprint_counts": {name: len(ids) for name, ids in split_blueprint_indices.items()},
-        "split_shape_blueprint_counts": {
-            name: {
-                shape_type: int(
-                    sum(1 for idx in ids if str(blueprints[idx]["meta"].get("shape_type", "circle")) == shape_type)
-                )
-                for shape_type in sorted({str(blueprint["meta"].get("shape_type", "circle")) for blueprint in blueprints})
-            }
-            for name, ids in split_blueprint_indices.items()
-        },
+        "split_shape_blueprint_counts": meta["split_shape_blueprint_counts"],
         "splits": splits,
         "sizes": {name: int(split["features"].shape[0]) for name, split in splits.items()},
+        "raw_feature_dim": meta["raw_feature_dim"],
+        "feature_version": meta["feature_version"],
+        "feature_order": meta["feature_order"],
     }

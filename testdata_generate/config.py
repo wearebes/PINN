@@ -13,7 +13,7 @@ DEFAULT_DATASET_NAME = f"test_{METHOD_CODE}_rho<RHO_MODEL>.h5"
 DEFAULT_CUSTOM_DATASET_NAME = f"test_{METHOD_CODE}_custom.h5"
 DATASET_SCHEMA_VERSION = 2
 _TOP_LEVEL_REQUIRED_KEYS = frozenset({"scenarios"})
-_TOP_LEVEL_OPTIONAL_KEYS = frozenset({"dataset_name", "output_dir", "test_iters", "scale_h"})
+_TOP_LEVEL_OPTIONAL_KEYS = frozenset({"dataset_name", "output_dir", "test_iters", "scale_h", "augment_gradient"})
 _SCENARIO_REQUIRED_KEYS = frozenset({"exp_id", "experiment_type", "rho_model", "L", "N", "a", "b", "p"})
 _SCENARIO_OPTIONAL_KEYS = frozenset({"h"})
 
@@ -40,12 +40,12 @@ def compute_grid_spacing(*, L: float, N: int) -> float:
 
 def normalize_test_iters(values: Any) -> tuple[int, ...]:
     if not isinstance(values, (list, tuple)):
-        raise ValueError(f"test_iters must be a list of positive integers, got {type(values).__name__}.")
+        raise ValueError(f"test_iters must be a list of non-negative integers, got {type(values).__name__}.")
     normalized = tuple(sorted({int(item) for item in values}))
     if not normalized:
-        raise ValueError("test_iters must contain at least one positive integer.")
-    if min(normalized) < 1:
-        raise ValueError("test_iters must contain only positive integers.")
+        raise ValueError("test_iters must contain at least one non-negative integer.")
+    if min(normalized) < 0:
+        raise ValueError("test_iters must contain only non-negative integers.")
     return normalized
 
 
@@ -141,6 +141,7 @@ class TestDataConfig:
     config_source: str = "legacy_builtin"
     requested_rho_model: int | None = None
     scale_h: bool = False
+    augment_gradient: bool = False
 
     def output_path(self) -> Path:
         dataset_name = self.dataset_name
@@ -207,6 +208,7 @@ def load_scenario_config(path: str | Path) -> TestDataConfig:
     output_dir = Path(output_dir_raw)
     rho_model = unique_rho_models[0] if len(unique_rho_models) == 1 else None
     scale_h = bool(raw.get("scale_h", default_cfg.scale_h))
+    augment_gradient = bool(raw.get("augment_gradient", default_cfg.augment_gradient))
     return TestDataConfig(
         test_iters=test_iters,
         rho_model=rho_model,
@@ -216,4 +218,5 @@ def load_scenario_config(path: str | Path) -> TestDataConfig:
         config_source=str(config_path.resolve()),
         requested_rho_model=None,
         scale_h=scale_h,
+        augment_gradient=augment_gradient,
     )

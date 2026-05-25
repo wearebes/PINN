@@ -13,44 +13,42 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from testdata_generate.config import (
-        DATASET_SCHEMA_VERSION,
-        DEFAULT_CUSTOM_DATASET_NAME,
-        DEFAULT_DATASET_NAME,
-        DEFAULT_OUTPUT_DIR,
-        TestDataConfig,
-        available_rho_models,
-        filter_scenarios_by_rho_model,
-        flower_dataset_name,
-        legacy_flower_scenarios,
-        load_scenario_config,
-        normalize_test_iters,
-    )
-    from .reinit import LevelSetReinitializer
-else:
-    from .config import (
-        DATASET_SCHEMA_VERSION,
-        DEFAULT_CUSTOM_DATASET_NAME,
-        DEFAULT_DATASET_NAME,
-        DEFAULT_OUTPUT_DIR,
-        TestDataConfig,
-        available_rho_models,
-        filter_scenarios_by_rho_model,
-        flower_dataset_name,
-        legacy_flower_scenarios,
-        load_scenario_config,
-        normalize_test_iters,
-    )
-    from .reinit import LevelSetReinitializer
+from testdata_generate.config import (
+    DATASET_SCHEMA_VERSION,
+    DEFAULT_CUSTOM_DATASET_NAME,
+    DEFAULT_DATASET_NAME,
+    DEFAULT_OUTPUT_DIR,
+    TestDataConfig,
+    available_rho_models,
+    filter_scenarios_by_rho_model,
+    flower_dataset_name,
+    legacy_flower_scenarios,
+    load_scenario_config,
+    normalize_test_iters,
+)
+from testdata_generate.reinit import LevelSetReinitializer
+from train_generate.generate import (
+    interface_indices,
+    build_raw_features,
+    extract_grad9,
+)
 
 try:
     from scipy.optimize import minimize as _scipy_minimize
 except Exception:
     _scipy_minimize = None
 
-
-_PHI9_ROW_OFFSETS = np.asarray([-1, 0, 1, -1, 0, 1, -1, 0, 1], dtype=np.int64)
-_PHI9_COL_OFFSETS = np.asarray([1, 1, 1, 0, 0, 0, -1, -1, -1], dtype=np.int64)
+_STORE_SCHEMA: tuple[tuple[str, tuple[int, ...], Any], ...] = (
+    ("phi9", (0, 9), np.float32),
+    ("features", (0, 9), np.float32),
+    ("xy", (0, 2), np.float32),
+    ("phi0_center", (0,), np.float32),
+    ("hkappa_target", (0,), np.float32),
+    ("case_id", (0,), np.int16),
+    ("iter", (0,), np.int16),
+    ("rho_model", (0,), np.int16),
+    ("h", (0,), np.float32),
+)
 
 
 def build_grid(L: float, N: int) -> tuple[np.ndarray, np.ndarray, float]:
@@ -65,56 +63,6 @@ def build_flower_phi0(X: np.ndarray, Y: np.ndarray, a: float, b: float, p: int) 
     r = np.sqrt(X**2 + Y**2)
     return r - float(a) * np.cos(int(p) * theta) - float(b)
 
-
-def interface_indices(phi: np.ndarray) -> np.ndarray:
-    scx = phi[:-1, :] * phi[1:, :] <= 0.0
-    scy = phi[:, :-1] * phi[:, 1:] <= 0.0
-    mask = np.zeros_like(phi, dtype=bool)
-    ix, jx = np.where(scx)
-    iy, jy = np.where(scy)
-    mask[ix, jx] = True
-    mask[ix + 1, jx] = True
-    mask[iy, jy] = True
-    mask[iy, jy + 1] = True
-    mask[0, :] = False
-    mask[-1, :] = False
-    mask[:, 0] = False
-    mask[:, -1] = False
-    rows, cols = np.where(mask)
-    if rows.size == 0:
-        return np.zeros((0, 2), dtype=np.int64)
-    return np.column_stack((rows, cols)).astype(np.int64, copy=False)
-
-
-def extract_stencil_values(field: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    if indices.size == 0:
-        return np.zeros((0, 9), dtype=np.float32)
-    rows = indices[:, 0]
-    cols = indices[:, 1]
-    row_idx = rows[:, None] + _PHI9_ROW_OFFSETS.reshape(1, 9)
-    col_idx = cols[:, None] + _PHI9_COL_OFFSETS.reshape(1, 9)
-    return np.asarray(field[row_idx, col_idx], dtype=np.float32)
-
-
-def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    return extract_stencil_values(phi, indices)
-
-
-def build_raw_features(
-    phi: np.ndarray,
-    indices: np.ndarray,
-    *,
-    scale_h: bool = False,
-    h: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    phi9 = extract_phi9(phi, indices)
-    if scale_h:
-        if h is None or not (float(h) > 0.0):
-            raise ValueError(f"scale_h=True requires positive h, got {h!r}.")
-        features = (phi9 / np.float32(h)).astype(np.float32, copy=False)
-    else:
-        features = phi9.copy()
-    return phi9, features
 
 def find_projection_theta(
     xy: np.ndarray,
@@ -188,18 +136,17 @@ def hkappa_analytic(theta_proj: np.ndarray, h: float, a: float, b: float, p: int
     return (float(h) * kappa).astype(np.float32, copy=False)
 
 
+def _resolved_store_schema(*, feature_dim: int = 9) -> tuple[tuple[str, tuple[int, ...], Any], ...]:
+    if feature_dim == 9:
+        return _STORE_SCHEMA
+    return tuple(
+        (name, (0, int(feature_dim)), dtype) if name == "features" else (name, shape, dtype)
+        for name, shape, dtype in _STORE_SCHEMA
+    )
+
+
 def _empty_store() -> dict[str, list[np.ndarray]]:
-    return {
-        "phi9": [],
-        "features": [],
-        "xy": [],
-        "phi0_center": [],
-        "hkappa_target": [],
-        "case_id": [],
-        "iter": [],
-        "rho_model": [],
-        "h": [],
-    }
+    return {name: [] for name, _, _ in _STORE_SCHEMA}
 
 
 def _append_case_iter(
@@ -217,6 +164,7 @@ def _append_case_iter(
     iteration: int,
     rho_model: int,
     scale_h: bool = False,
+    augment_gradient: bool = False,
 ) -> int:
     indices = interface_indices(phi)
     if indices.size == 0:
@@ -228,6 +176,12 @@ def _append_case_iter(
     theta_proj = find_projection_theta(xy, a, b, p)
     count = indices.shape[0]
     phi9, features = build_raw_features(phi, indices, scale_h=scale_h, h=h)
+    if augment_gradient:
+        grad9 = extract_grad9(phi, indices)  # (N, 9, 2)
+        # Layout B: [phi9_features (9) | nx9 (9) | ny9 (9)] → 27D
+        features = np.concatenate(
+            [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+        ).astype(np.float32, copy=False)
 
     store["phi9"].append(phi9)
     store["features"].append(features)
@@ -241,32 +195,11 @@ def _append_case_iter(
     return count
 
 
-def _concat_store(store: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
-    shapes = {
-        "phi9": (0, 9),
-        "features": (0, 9),
-        "xy": (0, 2),
-        "phi0_center": (0,),
-        "hkappa_target": (0,),
-        "case_id": (0,),
-        "iter": (0,),
-        "rho_model": (0,),
-        "h": (0,),
-    }
-    dtypes = {
-        "phi9": np.float32,
-        "features": np.float32,
-        "xy": np.float32,
-        "phi0_center": np.float32,
-        "hkappa_target": np.float32,
-        "case_id": np.int16,
-        "iter": np.int16,
-        "rho_model": np.int16,
-        "h": np.float32,
-    }
+def _concat_store(store: dict[str, list[np.ndarray]], *, feature_dim: int = 9) -> dict[str, np.ndarray]:
+    schema = _resolved_store_schema(feature_dim=feature_dim)
     return {
-        key: np.concatenate(values, axis=0) if values else np.zeros(shapes[key], dtype=dtypes[key])
-        for key, values in store.items()
+        name: np.concatenate(store[name], axis=0) if store[name] else np.zeros(shape, dtype=dtype)
+        for name, shape, dtype in schema
     }
 
 def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
@@ -340,7 +273,8 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
         f"sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
         f"eps_sign_factor={cfg.eps_sign_factor} RK{cfg.time_order} WENO{cfg.space_order}"
     )
-    print(f"[testdata_generate] feature_order=phi9 output={output_path}")
+    feature_order = "phi9+nx9+ny9" if cfg.augment_gradient else "phi9"
+    print(f"[testdata_generate] feature_order={feature_order} output={output_path}")
 
     for case_id, scenario in enumerate(cfg.scenarios):
         X, Y, h_from_grid = build_grid(scenario.L, scenario.N)
@@ -349,6 +283,26 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
         phi0 = build_flower_phi0(X, Y, scenario.a, scenario.b, scenario.p)
         phi = phi0.astype(np.float64, copy=True)
         print(f"  case={case_id} {scenario.exp_id}")
+
+        if 0 in cfg.test_iters:
+            count = _append_case_iter(
+                store,
+                phi=phi,
+                phi0=phi0,
+                X=X,
+                Y=Y,
+                h=h_from_grid,
+                a=scenario.a,
+                b=scenario.b,
+                p=scenario.p,
+                case_id=case_id,
+                iteration=0,
+                rho_model=scenario.rho_model,
+                scale_h=bool(cfg.scale_h),
+                augment_gradient=bool(cfg.augment_gradient),
+            )
+            counts[f"{scenario.exp_id}/iter_0"] = count
+            print(f"    iter= 0 samples={count}")
 
         for iteration in range(1, max(cfg.test_iters) + 1):
             phi = reinitializer.reinitialize(phi, h_from_grid, 1)
@@ -368,11 +322,13 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 iteration=iteration,
                 rho_model=scenario.rho_model,
                 scale_h=bool(cfg.scale_h),
+                augment_gradient=bool(cfg.augment_gradient),
             )
             counts[f"{scenario.exp_id}/iter_{iteration}"] = count
             print(f"    iter={iteration:>2d} samples={count}")
 
-    arrays = _concat_store(store)
+    feature_dim = 27 if cfg.augment_gradient else 9
+    arrays = _concat_store(store, feature_dim=feature_dim)
     _validate_arrays(arrays, cfg)
     _write_hdf5(output_path, arrays, cfg, counts)
     print(f"[testdata_generate] wrote {arrays['features'].shape[0]} samples")
@@ -383,8 +339,8 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
     n = arrays["features"].shape[0]
     if arrays["phi9"].ndim != 2 or arrays["phi9"].shape[1] != 9:
         raise ValueError(f"phi9 must have shape (N, 9), got {arrays['phi9'].shape}.")
-    if arrays["features"].ndim != 2 or arrays["features"].shape[1] != 9:
-        raise ValueError(f"features must have shape (N, 9), got {arrays['features'].shape}.")
+    if arrays["features"].ndim != 2 or arrays["features"].shape[1] not in (9, 27):
+        raise ValueError(f"features must have shape (N, 9) or (N, 27), got {arrays['features'].shape}.")
     if arrays["xy"].ndim != 2 or arrays["xy"].shape[1] != 2:
         raise ValueError(f"xy must have shape (N, 2), got {arrays['xy'].shape}.")
     for key, value in arrays.items():
@@ -421,6 +377,26 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
             f"do not match requested rho_model={int(cfg.requested_rho_model)}."
         )
 
+def _feature_version_attrs(raw_feature_dim: int, scale_h: bool) -> dict[str, Any]:
+    if raw_feature_dim == 9:
+        feature_version = 1
+        feature_order = "phi9"
+        feature_transform = "phi9_over_h" if scale_h else "phi9"
+    elif raw_feature_dim == 27:
+        feature_version = 2
+        feature_order = "phi9+nx9+ny9"
+        feature_transform = "phi9nx9ny9_over_h" if scale_h else "phi9+nx9+ny9"
+    else:
+        raise ValueError(f"Unexpected feature dim {raw_feature_dim}; expected 9 or 27.")
+    return {
+        "feature_version": feature_version,
+        "feature_dim_raw": raw_feature_dim,
+        "feature_order": feature_order,
+        "scale_h": bool(scale_h),
+        "feature_transform": feature_transform,
+    }
+
+
 def _write_hdf5(
     output_path: Path,
     arrays: dict[str, np.ndarray],
@@ -445,11 +421,8 @@ def _write_hdf5(
         "sampling_rule": cfg.sampling_rule,
         "stencil_encoding": cfg.stencil_encoding,
         "target_rule": cfg.target_rule,
-        "feature_version": 1,
-        "feature_dim_raw": 9,
-        "feature_order": "phi9",
-        "scale_h": bool(cfg.scale_h),
-        "feature_transform": "phi9_over_h" if cfg.scale_h else "phi9",
+        "augment_gradient": bool(cfg.augment_gradient),
+        **_feature_version_attrs(arrays["features"].shape[1], cfg.scale_h),
         "method_code": cfg.method_code,
         "output_root": str(cfg.output_dir),
         "config_source": str(cfg.config_source),
@@ -471,8 +444,8 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
     values = tuple(int(part.strip()) for part in str(raw).split(",") if part.strip())
     if not values:
         raise argparse.ArgumentTypeError("Expected at least one integer.")
-    if min(values) < 1:
-        raise argparse.ArgumentTypeError("test iterations must be >= 1.")
+    if min(values) < 0:
+        raise argparse.ArgumentTypeError("test iterations must be >= 0 (0 = raw phi0 before first reinit).")
     return values
 
 
@@ -506,7 +479,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--test-iters",
         type=_parse_int_tuple,
         default=None,
-        help="Comma-separated test iterations. In config-first mode, overrides the JSON value.",
+        help="Comma-separated test iterations. Use 0 for raw phi0 before the first reinit step. In config-first mode, overrides the JSON value.",
     )
     parser.add_argument(
         "--scale-h",
@@ -517,12 +490,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "When combined with --scenario-config, this flag (if present) overrides the JSON 'scale_h'."
         ),
     )
+    parser.add_argument(
+        "--augment-gradient",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Append per-node normalised gradient directions (nx9, ny9) to phi9 features, "
+            "yielding 27D features [phi9 | nx9 | ny9]. "
+            "When combined with --scenario-config, this flag (if present) overrides the JSON 'augment_gradient'."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     cli_scale_h_provided = any(token == "--scale-h" or token.startswith("--scale-h=") for token in sys.argv[1:])
+    cli_augment_gradient_provided = any(
+        token in ("--augment-gradient", "--no-augment-gradient") for token in sys.argv[1:]
+    )
     default_cfg = TestDataConfig()
     if args.scenario_config:
         cfg = load_scenario_config(args.scenario_config)
@@ -531,6 +517,8 @@ def main() -> None:
             overrides["test_iters"] = normalize_test_iters(args.test_iters)
         if cli_scale_h_provided:
             overrides["scale_h"] = bool(args.scale_h)
+        if cli_augment_gradient_provided:
+            overrides["augment_gradient"] = bool(args.augment_gradient)
         if overrides:
             cfg = replace(cfg, **overrides)
     else:
@@ -539,6 +527,7 @@ def main() -> None:
             test_iters=normalize_test_iters(args.test_iters if args.test_iters is not None else default_cfg.test_iters),
             requested_rho_model=int(args.rho_model),
             scale_h=bool(args.scale_h),
+            augment_gradient=bool(args.augment_gradient),
         )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)
