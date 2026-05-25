@@ -5,11 +5,11 @@
 
 ```bash
 python -m train_generate.generate \
-  --output dataset/266_h.h5 \
+  --output dataset/1024_h.h5 \
   --output-dir dataset \
   --scale-h \
-  --dataset-name 266_h.h5 \
-  --resolutions 512 
+  --dataset-name 1024_h.h5 \
+  --resolutions 1024
 ```
 
 ## 3. Train V1 Model
@@ -29,9 +29,6 @@ python -m model.train \
   --swanlab-tags baseline,v2,rho256 
   
 ```
-
-For 266 or 276, replace the dataset, checkpoint, CSV, experiment name, description, and tags with the matching resolution.
-
 ## 4. Evaluate Train/Val/Test Split
 
 256 test split example with full SwanLab arguments:
@@ -55,15 +52,12 @@ python -m evaluate.split \
 ```bash
 python -m testdata_generate.generate \
   --rho-model 276 \
-  --test-iters 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20 \
   --output test_data/rho276.h5
 ```
 
 ## 6. Generate Arbitrary-Resolution V1 Flower Data
 
 `--scenario-config` is still supported, but only for V1 phi9 flower generation.
-
-Example config:
 
 ```json
 {

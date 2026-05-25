@@ -16,14 +16,14 @@ def default_dataset_path() -> Path:
 def default_output_model_path() -> Path:
     return Path("out") / "best_stencil_hkappa.pt"
 
-
 @dataclass(frozen=True)
 class MLP_TrainConfig:
     hidden_units: int = 128
     lr: float = 1.0e-4
+    l2_reg: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
-    batch_size: int = 256
+    batch_size: int = 512
     seed: int = 42
     compile_mode: str = "reduce-overhead"
     profile_cuda_timing: bool = False
@@ -38,9 +38,10 @@ class CNN_TrainConfig:
     kernel_size: int = 3
     padding: int = 1
     lr: float = 1.0e-4
+    l2_reg: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
-    batch_size: int = 204800
+    batch_size: int = 512
     seed: int = 42
     compile_mode: str = "reduce-overhead"
     profile_cuda_timing: bool = False

@@ -3,3 +3,4 @@ test_data/
 pinn.html
 .codex
 __pycache__/
+logs/
