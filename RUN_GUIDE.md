@@ -23,10 +23,44 @@ python -m evaluate.split \
 python -m testdata_generate --rho-model 256 \
   --test-iters 1,2,3,4,5,10,20 --output test_data/rho256.h5
 
+# Generate rho276 test data
+python -m testdata_generate --rho-model 276 --output test_data/rho276.h5
+
 # 5. Evaluate flower
 python -m evaluate.flower \
   --data test_data/rho256.h5 \
   --model-path out/model_256.pt --normalization-csv out/model_256.csv \
   --use-swanlab --swanlab-mode cloud --swanlab-project PINN \
   --swanlab-experiment-name flower_256 --swanlab-tags baseline,rho256
+```
+
+## Custom Scenario Generation (V1 phi9)
+
+`--scenario-config` is supported for V1 phi9 flower generation:
+
+```json
+{
+  "dataset_name": "flower_custom_v1.h5",
+  "output_dir": "test_data",
+  "test_iters": [1, 5, 10, 20],
+  "scenarios": [
+    {
+      "exp_id": "smooth_300",
+      "experiment_type": "smooth",
+      "rho_model": 300,
+      "L": 0.2072,
+      "N": 121,
+      "a": 0.05,
+      "b": 0.15,
+      "p": 3
+    }
+  ]
+}
+```
+
+```bash
+python -m testdata_generate.generate \
+  --scenario-config test_data/flower_custom_v1.json \
+  --test-iters 1,5,10,20 \
+  --output test_data/flower_custom_v1.h5
 ```

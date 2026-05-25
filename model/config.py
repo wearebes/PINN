@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field, fields
@@ -16,14 +16,15 @@ def default_dataset_path() -> Path:
 def default_output_model_path() -> Path:
     return Path("out") / "best_stencil_hkappa.pt"
 
-
 @dataclass(frozen=True)
 class _BaseTrainConfig:
     """Shared training hyperparameters; do not instantiate directly."""
 
     lr: float = 1.0e-4
+    l2_reg: float = 1.0e-4
     max_epochs: int = 1000
     patience: int = 30
+    batch_size: int = 512
     seed: int = 42
     compile_mode: str = "reduce-overhead"
     profile_cuda_timing: bool = False

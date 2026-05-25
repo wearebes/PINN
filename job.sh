@@ -3,8 +3,8 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=48G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -98,11 +98,13 @@ export OMP_NUM_THREADS=2
 export MKL_NUM_THREADS=2
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-# ---------- 5. 串行训练 ----------
-RES=(256 266 276)
+# ---------- 5. Parallel training (single GPU) ----------
+RES=(266 276 512 )
 FAILED=0
+PIDS=()
 
 for r in "${RES[@]}"; do
+  r_h="${r}_h"
   SWAN_DIR="$SWAN_ROOT/$r"
   swan_args=()
   swan_enabled_for_r=0
@@ -115,8 +117,8 @@ for r in "${RES[@]}"; do
         --swanlab-mode offline
         --swanlab-logdir "$SWAN_DIR"
         --swanlab-project PINN
-        --swanlab-experiment-name "baseline2_${r}_${JOB_ID}"
-        --swanlab-tags baseline
+        --swanlab-experiment-name "baseline_${r_h}"
+        --swanlab-tags baseline_h
       )
     else
       warn "res=${r} 无法写入 SwanLab 离线目录，跳过 SwanLab。SWAN_DIR=$SWAN_DIR"
@@ -124,32 +126,39 @@ for r in "${RES[@]}"; do
   fi
 
   log_train "[launch] res=${r} swanlog_enabled=${swan_enabled_for_r} swanlog=$SWAN_DIR out=$OUT_ROOT start=$(date -Is)"
-  if (
+  (
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
     export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/${r}/.torchinductor"
     export TRITON_CACHE_DIR="$TMPDIR/${r}/.triton"
     export XDG_CACHE_HOME="$TMPDIR/${r}/.cache"
     mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"
 
-    python -m model.train \
-        --dataset-output       "dataset/${r}.h5" \
-        --output-model         "$OUT_ROOT/baseline2_${r}.pt" \
-        --normalization-csv    "$OUT_ROOT/baseline2_${r}.csv" \
-        --disable-compile \
+    if python -m model.train \
+        --dataset-output       "dataset/${r_h}.h5" \
+        --output-model         "$OUT_ROOT/baseline_${r_h}.pt" \
+        --normalization-csv    "$OUT_ROOT/baseline_${r_h}.csv" \
         "${swan_args[@]}" \
-      >> "$TRAIN_LOG" 2>> "$ERROR_LOG"
-  ); then
-    log_train "[done]   res=${r} OK end=$(date -Is)"
-  else
-    rc=$?
-    log_train "[FAIL]   res=${r} exit=$rc end=$(date -Is)"
-    printf '%s\n' "[FAIL] res=${r} exit=$rc" >>"$ERROR_LOG"
+      >> "$TRAIN_LOG" 2>> "$ERROR_LOG"; then
+      log_train "[done]   res=${r} OK end=$(date -Is)"
+    else
+      rc=$?
+      log_train "[FAIL]   res=${r} exit=$rc end=$(date -Is)"
+      printf '%s\n' "[FAIL] res=${r} exit=$rc" >>"$ERROR_LOG"
+      exit "$rc"
+    fi
+  ) &
+  PIDS+=($!)
+done
+
+for pid in "${PIDS[@]}"; do
+  if ! wait "$pid"; then
     FAILED=$((FAILED+1))
   fi
 done
 
 # ---------- 6. 汇总收尾 ----------
 if [[ $ENABLE_SWANLAB -eq 1 ]] && find "$SWAN_ROOT" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
-  echo "[summary] swanlab sync: swanlab sync $SWAN_ROOT/256 $SWAN_ROOT/266 $SWAN_ROOT/276"
+  echo "[summary] swanlab sync: swanlab sync $SWAN_ROOT/64 $SWAN_ROOT/128 $SWAN_ROOT/256"
 else
   echo "[summary] swanlab offline logs not available"
 fi

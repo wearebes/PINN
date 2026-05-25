@@ -41,8 +41,8 @@ TRAIN_SPLIT_NAMES = ("train", "val")
 TRAINING_FIELD_NAMES = ("features", "hkappa_target")
 
 
-def create_optimizer(model: nn.Module, lr: float) -> torch.optim.Optimizer:
-    return torch.optim.Adam(model.parameters(), lr=lr)
+def create_optimizer(model: nn.Module, lr: float, weight_decay: float) -> torch.optim.Optimizer:
+    return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
 
 def emit_phase_event(path: str | Path | None, event: str, **payload: Any) -> None:
@@ -173,7 +173,7 @@ def maybe_warmup_compiled_training(
     emit_phase_event(phase_log_path, "compile_warmup_begin", warmup_samples=warmup_count)
     checkpoint_model = unwrap_model(model)
     saved_state = {key: value.detach().cpu().clone() for key, value in checkpoint_model.state_dict().items()}
-    warmup_optimizer = create_optimizer(checkpoint_model, train_config.lr)
+    warmup_optimizer = create_optimizer(checkpoint_model, train_config.lr, train_config.l2_reg)
     warmup_scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     feature_batch = split["features"][:warmup_count]
     target_batch = split["hkappa_target"][:warmup_count]
@@ -264,7 +264,7 @@ def train_model(
     phase_log_path: str | Path | None = None,
 ) -> tuple[nn.Module, dict[str, Any]]:
     validate_training_splits(bundle, require_phi9=False)
-    optimizer = create_optimizer(checkpoint_model, train_config.lr)
+    optimizer = create_optimizer(checkpoint_model, train_config.lr, train_config.l2_reg)
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled) if device.type == "cuda" else None
     best_val = float("inf")
     best_state: dict[str, torch.Tensor] | None = None
@@ -405,6 +405,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--padding", type=int, default=cnn_defaults.padding)
     parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--lr", type=float, default=mlp_defaults.lr)
+    parser.add_argument("--l2-reg", type=float, default=mlp_defaults.l2_reg)
     parser.add_argument("--max-epochs", type=int, default=mlp_defaults.max_epochs)
     parser.add_argument("--patience", type=int, default=mlp_defaults.patience)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -444,6 +445,7 @@ def main() -> None:
     default_batch_size = mlp_defaults.batch_size if model_type == "mlp" else cnn_defaults.batch_size
     overrides = {
         "lr": args.lr,
+        "l2_reg": args.l2_reg,
         "max_epochs": args.max_epochs,
         "patience": args.patience,
         "batch_size": args.batch_size if args.batch_size is not None else default_batch_size,

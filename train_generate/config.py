@@ -40,7 +40,7 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class GenerationConfig:
-    num_workers: int = 24
+    num_workers: int = 96
     generation_batch_size: int = 10240
     output_dir: Path = field(default_factory=default_output_dir)
     dataset_name: str = ""
