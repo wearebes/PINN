@@ -153,7 +153,7 @@ launch_train() {
         --dataset-output       "dataset/${r_hgradient}.h5" \
         --output-model         "$OUT_ROOT/baseline_${r_hgradient}.pt" \
         --normalization-csv    "$OUT_ROOT/baseline_${r_hgradient}.csv" \
-        --l2-reg 0 \
+        --l2-reg 1e-4 \
         "${swan_args[@]}" \
       >> "$TRAIN_LOG" 2>> "$ERROR_LOG"; then
       log_train "[done]   res=${r} OK end=$(date -Is)"
