@@ -1,4 +1,4 @@
-# Run Guide
+﻿# Run Guide
 
 ```bash
 # 1. Generate training data
@@ -20,22 +20,21 @@ python -m evaluate.split \
   --model-path out/model_256.pt --normalization-csv out/model_256.csv
 
 # 4. Generate flower test data
-python -m testdata_generate --rho-model 256 \
-  --test-iters 1,2,3,4,5,10,20 --output test_data/rho256.h5
+python -m testdata_generate --rho-model 128 \
+  --output test_data/rho128.h5
 
 # Generate rho276 test data
-python -m testdata_generate --rho-model 276 --output test_data/rho276.h5
+python -m testdata_generate --rho-model 276 --scale-h --output test_data/rho276_h.h5
 
 # 5. Evaluate flower
 python -m evaluate.flower \
-  --data test_data/rho256.h5 \
-  --model-path out/model_256.pt --normalization-csv out/model_256.csv \
-  --use-swanlab --swanlab-mode cloud --swanlab-project PINN \
-  --swanlab-experiment-name flower_256 --swanlab-tags baseline,rho256
+  --data test_data/rho256_h.h5 \
+  --model-path out/2430/baseline_256_h.pt --normalization-csv out/2430/baseline_256_h.csv \
+  --use-swanlab --swanlab-mode cloud --swanlab-project geometry \
+  --swanlab-experiment-name flower_256_phi9h --swanlab-tags version_phi/h,model256-256
 ```
 
 ## Custom Scenario Generation (V1 phi9)
-
 `--scenario-config` is supported for V1 phi9 flower generation:
 
 ```json
