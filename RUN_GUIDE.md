@@ -2,9 +2,13 @@
 
 ```bash
 # 1. Generate training data
-python -m train_generate --output dataset/256_h.h5 --resolutions 256 --scale-h
+python -m train_generate --output dataset/256_h.h5 --resolutions 1024 --scale-h
 # V2 (27D features)
-python -m train_generate --output dataset/256_h_v2.h5 --resolutions 256 --scale-h --augment-gradient
+python -m train_generate --output dataset/256_h_v2.h5 --resolutions 1024 --scale-h --augment-gradient
+
+python -m train_generate --output dataset/1024.h5 --resolutions 1024 
+python -m train_generate --output dataset/1024_h.h5 --resolutions 1024 --scale-h
+python -m train_generate --output dataset/1024_hgradient.h5 --resolutions 1024 --scale-h --augment-gradient
 
 # 2. Train
 python -m model.train \
@@ -63,3 +67,6 @@ python -m testdata_generate.generate \
   --test-iters 1,5,10,20 \
   --output test_data/flower_custom_v1.h5
 ```
+
+tmux new -s 1024 
+control+b d

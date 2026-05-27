@@ -12,3 +12,11 @@
 [launch] res=266 gpu=1 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/3014/266 out=/home/mail/jiaqizhang/jcy/PINN/out/3014 start=2026-05-26T14:07:25+08:00
 [launch] res=276 gpu=1 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/3014/276 out=/home/mail/jiaqizhang/jcy/PINN/out/3014 start=2026-05-26T14:07:25+08:00
 [launch] res=512 gpu=1 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/3014/512 out=/home/mail/jiaqizhang/jcy/PINN/out/3014 start=2026-05-26T14:07:25+08:00
+[done]   res=64 OK end=2026-05-26T15:25:38+08:00
+[done]   res=128 OK end=2026-05-26T17:17:18+08:00
+[done]   res=256 OK end=2026-05-26T21:21:59+08:00
+[done]   res=276 OK end=2026-05-26T23:07:01+08:00
+[done]   res=512 OK end=2026-05-26T23:15:17+08:00
+[done]   res=266 OK end=2026-05-27T02:19:36+08:00
+[summary] swanlab sync: swanlab sync /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/64 /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/128 /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/256 /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/266 /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/276 /home/mail/jiaqizhang/jcy/PINN/swanlog/3014/512
+[summary] failures=0 / 6   swanlog: /home/mail/jiaqizhang/jcy/PINN/swanlog/3014   models: /home/mail/jiaqizhang/jcy/PINN/out/3014
