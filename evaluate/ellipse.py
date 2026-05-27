@@ -11,24 +11,22 @@ import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from evaluate.curvature_plotting import (
+from evaluate.shared import (
+    add_swanlab_args,
     build_case_summary_rows,
     build_swanlab_image,
     build_swanlab_table_payload,
-    ensure_output_dir,
-    metric_summary,
-    render_curvature_overview,
-    write_csv_rows,
-)
-from evaluate.shared import (
-    add_swanlab_args,
     central_difference_hkappa_from_phi9,
     compute_metrics,
     csv_to_list,
+    ensure_output_dir,
     init_swanlab_run,
     load_model_from_checkpoint,
+    metric_summary,
     predict_hkappa_full_batch,
+    render_curvature_overview,
     resolve_feature_transform,
+    write_csv_rows,
 )
 from train_generate.generate import (
     build_grid,
@@ -36,6 +34,7 @@ from train_generate.generate import (
     build_raw_features,
     compute_hkappa_targets,
     ellipse_local_coordinates,
+    extract_grad9,
     interface_indices,
     project_theta_to_axis_aligned_ellipse,
     project_theta_to_axis_aligned_ellipse_high_precision,
@@ -200,6 +199,11 @@ def run_ellipse_evaluation(
         phi9, features = build_raw_features(
             phi0, indices, scale_h=bool(data_config.scale_h), h=h_value
         )
+        if feature_transform["feature_version"] == 2:
+            grad9 = extract_grad9(phi0, indices)
+            features = np.concatenate(
+                [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+            ).astype(np.float32, copy=False)
         analytic = compute_hkappa_targets(
             blueprint, indices, data_config=data_config, X=X, Y=Y
         ).reshape(-1)

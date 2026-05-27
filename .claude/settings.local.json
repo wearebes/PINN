@@ -5,7 +5,9 @@
       "Bash(Select-Object -ExpandProperty FullName)",
       "PowerShell(head -30)",
       "Bash(PowerShell -Command \"Get-ChildItem 'E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\dataset' -ErrorAction SilentlyContinue | Select-Object Name, Length\")",
-      "Bash(PowerShell -Command \"Get-ChildItem 'E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\dataset\\\\256' -ErrorAction SilentlyContinue | Select-Object Name\")"
+      "Bash(PowerShell -Command \"Get-ChildItem 'E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\dataset\\\\256' -ErrorAction SilentlyContinue | Select-Object Name\")",
+      "Bash(Get-ChildItem -Path \"E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\evaluate\\\\\" -Force | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem -Path \"E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\evaluate\\\\\" | Select-Object Name, @{Name='Size\\(bytes\\)';Expression={$_.Length}}, LastWriteTime | Format-Table -AutoSize)"
     ]
   }
 }

@@ -1,5 +1,4 @@
 ﻿# Run Guide
-
 ```bash
 # 1. Generate training data
 python -m train_generate --output dataset/256_h.h5 --resolutions 1024 --scale-h
@@ -18,65 +17,41 @@ python -m model.train \
   --use-swanlab --swanlab-mode cloud --swanlab-project PINN \
   --swanlab-experiment-name model_256 --swanlab-tags baseline,rho256
 
-# 3. Evaluate split
-python -m evaluate.split \
-  --data dataset/256_h.h5 --split test \
-  --model-path out/model_256.pt --normalization-csv out/model_256.csv
+# 3. Generate flower test data
+# --rho-model 接受任意整数 >= 4；legacy 精调值：256, 266, 276
+# 其他分辨率自动推导 L 和 N（h = 1/(rho_model-1)，接口外留 2 格 margin）
 
-# 4. Generate flower test data
-python -m testdata_generate --rho-model 128 \
-  --output test_data/rho128.h5
+python -m testdata_generate --rho-model 512 --scale-h --output dataset/test_data/512_h.h5
+python -m testdata_generate --rho-model 512 --augment-gradient --output dataset/test_data/512_hgradient.h5
+python -m testdata_generate --rho-model 256 --test-iters 1,5,10,20 --output test_data/rho256_iters.h5
 
-# Generate rho276 test data
-python -m testdata_generate --rho-model 276 --scale-h --output test_data/rho276_h.h5
-
-# 5. Evaluate flower
+# 4. Evaluate flower
+# 每次运行产出一张 2行×3列 overview 图（smooth + acute，最大 iter）
+# 输出: out/curvature_viz/flower/flower_curvature_overview_rho<N>.png
 python -m evaluate.flower \
-  --data test_data/rho256_h.h5 \
-  --model-path out/2430/baseline_256_h.pt --normalization-csv out/2430/baseline_256_h.csv \
+  --data dataset/test_data/256_hgradient.h5 \
+  --model-path out/256/baseline_256_hgradient.pt \
+  --output-dir out/curvature_viz/flower
+
+# 加 SwanLab 日志
+python -m evaluate.flower \
+  --data dataset/test_data/256_hgradient.h5 \
+  --model-path out/256/baseline_256_hgradient.pt \
+  --output-dir out/curvature_viz/flower \
   --use-swanlab --swanlab-mode cloud --swanlab-project geometry \
-  --swanlab-experiment-name flower_256_phi9h --swanlab-tags version_phi/h,model256-256
-```
-
-## Custom Scenario Generation (V1 phi9)
-`--scenario-config` is supported for V1 phi9 flower generation:
-
-```json
-{
-  "dataset_name": "flower_custom_v1.h5",
-  "output_dir": "test_data",
-  "test_iters": [1, 5, 10, 20],
-  "scenarios": [
-    {
-      "exp_id": "smooth_300",
-      "experiment_type": "smooth",
-      "rho_model": 300,
-      "L": 0.2072,
-      "N": 121,
-      "a": 0.05,
-      "b": 0.15,
-      "p": 3
-    }
-  ]
-}
-```
-
-```bash
-python -m testdata_generate.generate \
-  --scenario-config test_data/flower_custom_v1.json \
-  --test-iters 1,5,10,20 \
-  --output test_data/flower_custom_v1.h5
+  --swanlab-experiment-name flower_256_hgradient --swanlab-tags v2,rho256
 ```
 
 tmux new -s 1024 
 control+b d
+
 
 ```bash
 python -m evaluate.training_curvature --data dataset/266/266.h5 --output-dir dataset/266
 ```
 
 ```bash
-# 6. Evaluate ellipse
+# 5. Evaluate ellipse
 # Cross-resolution (256 model on 276 grid)
 python -m evaluate.ellipse \
   --rho-model 256 \

@@ -23,7 +23,6 @@ from testdata_generate.config import (
     filter_scenarios_by_rho_model,
     flower_dataset_name,
     legacy_flower_scenarios,
-    load_scenario_config,
     make_scenarios_for_rho_model,
     normalize_test_iters,
 )
@@ -458,12 +457,12 @@ def _parse_int_tuple(raw: str) -> tuple[int, ...]:
 def build_arg_parser() -> argparse.ArgumentParser:
     available = ", ".join(str(item) for item in available_rho_models(legacy_flower_scenarios()))
     parser = argparse.ArgumentParser(
-        description="Generate flower test data from legacy built-in rho_model scenarios or an external scenario JSON file."
+        description="Generate flower test data for a given rho_model."
     )
-    source_group = parser.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
+    parser.add_argument(
         "--rho-model",
         type=int,
+        required=True,
         help=(
             "Target rho_model (integer >= 4). "
             f"Legacy pre-tuned values: {available}. "
@@ -471,35 +470,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "with a 2-cell margin around the interface."
         ),
     )
-    source_group.add_argument(
-        "--scenario-config",
-        type=str,
-        default="",
-        help="Path to a JSON file that defines arbitrary flower scenarios.",
-    )
     parser.add_argument(
         "--output",
         type=str,
         default="",
-        help=(
-            f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME} for single-rho runs, "
-            f"or {DEFAULT_OUTPUT_DIR / DEFAULT_CUSTOM_DATASET_NAME} for multi-rho scenario configs."
-        ),
+        help=f"Full output path. Defaults to {DEFAULT_OUTPUT_DIR / DEFAULT_DATASET_NAME}.",
     )
     parser.add_argument(
         "--test-iters",
         type=_parse_int_tuple,
         default=None,
-        help="Comma-separated test iterations. Use 0 for raw phi0 before the first reinit step. In config-first mode, overrides the JSON value.",
+        help="Comma-separated test iterations. Use 0 for raw phi0 before the first reinit step.",
     )
     parser.add_argument(
         "--scale-h",
         action="store_true",
         default=False,
-        help=(
-            "If set, write features = phi9 / h. Default off; features == phi9. "
-            "When combined with --scenario-config, this flag (if present) overrides the JSON 'scale_h'."
-        ),
+        help="If set, write features = phi9 / h. Default off; features == phi9.",
     )
     parser.add_argument(
         "--augment-gradient",
@@ -507,8 +494,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Append per-node normalised gradient directions (nx9, ny9) to phi9 features, "
-            "yielding 27D features [phi9 | nx9 | ny9]. "
-            "When combined with --scenario-config, this flag (if present) overrides the JSON 'augment_gradient'."
+            "yielding 27D features [phi9 | nx9 | ny9]."
         ),
     )
     return parser
@@ -516,30 +502,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    cli_scale_h_provided = any(token == "--scale-h" or token.startswith("--scale-h=") for token in sys.argv[1:])
-    cli_augment_gradient_provided = any(
-        token in ("--augment-gradient", "--no-augment-gradient") for token in sys.argv[1:]
-    )
     default_cfg = TestDataConfig()
-    if args.scenario_config:
-        cfg = load_scenario_config(args.scenario_config)
-        overrides: dict[str, Any] = {}
-        if args.test_iters is not None:
-            overrides["test_iters"] = normalize_test_iters(args.test_iters)
-        if cli_scale_h_provided:
-            overrides["scale_h"] = bool(args.scale_h)
-        if cli_augment_gradient_provided:
-            overrides["augment_gradient"] = bool(args.augment_gradient)
-        if overrides:
-            cfg = replace(cfg, **overrides)
-    else:
-        cfg = TestDataConfig(
-            rho_model=int(args.rho_model),
-            test_iters=normalize_test_iters(args.test_iters if args.test_iters is not None else default_cfg.test_iters),
-            requested_rho_model=int(args.rho_model),
-            scale_h=bool(args.scale_h),
-            augment_gradient=bool(args.augment_gradient),
-        )
+    cfg = TestDataConfig(
+        rho_model=int(args.rho_model),
+        test_iters=normalize_test_iters(args.test_iters if args.test_iters is not None else default_cfg.test_iters),
+        requested_rho_model=int(args.rho_model),
+        scale_h=bool(args.scale_h),
+        augment_gradient=bool(args.augment_gradient),
+    )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)
 

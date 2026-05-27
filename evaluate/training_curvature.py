@@ -13,8 +13,15 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from evaluate.curvature_plotting import build_swanlab_image, build_swanlab_table_payload, ensure_output_dir, write_csv_rows
-from evaluate.shared import add_swanlab_args, csv_to_list, init_swanlab_run
+from evaluate.shared import (
+    add_swanlab_args,
+    build_swanlab_image,
+    build_swanlab_table_payload,
+    csv_to_list,
+    ensure_output_dir,
+    init_swanlab_run,
+    write_csv_rows,
+)
 from train_generate.generate import build_grid, build_phi0_grid, compute_hkappa_targets, interface_indices
 from train_generate.io import load_training_metadata_from_hdf5
 

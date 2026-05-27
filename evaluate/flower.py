@@ -14,28 +14,26 @@ import torch
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from evaluate.curvature_plotting import (
+from evaluate.shared import (
     ANGLE_BIN_FIELDNAMES,
+    add_swanlab_args,
     build_angle_bin_rows,
     build_case_summary_rows,
     build_swanlab_image as _build_swanlab_image,
     build_swanlab_table_payload,
-    ensure_output_dir,
-    metric_summary as _metric_summary,
-    render_curvature_overview,
-    sanitize_name as _sanitize_name,
-    validate_angle_bin_deg,
-)
-from evaluate.shared import (
-    add_swanlab_args,
     central_difference_hkappa_from_phi9,
     compute_metrics,
     csv_to_list,
+    ensure_output_dir,
     group_metric_rows,
     init_swanlab_run,
     load_model_from_checkpoint,
+    metric_summary as _metric_summary,
     predict_hkappa_full_batch,
+    render_curvature_overview,
     resolve_feature_transform,
+    sanitize_name as _sanitize_name,
+    validate_angle_bin_deg,
 )
 from model.config import default_output_model_path
 from testdata_generate.generate import find_projection_theta
@@ -58,49 +56,24 @@ def _case_sort_key(case_entry: dict[str, Any]) -> tuple[str, int, int]:
     return (str(case_entry["case_label"]), int(case_entry["iter"]), int(case_entry["case_id"]))
 
 
+def _select_overview_cases(case_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_family: dict[str, list[dict[str, Any]]] = {}
+    for row in case_rows:
+        family = str(row["case_label"]).rsplit("_", 1)[0]
+        by_family.setdefault(family, []).append(row)
+    result = []
+    for family in ("smooth", "acute"):
+        if family in by_family:
+            result.append(max(by_family[family], key=lambda r: int(r["iter"])))
+    return result
+
+
 def _build_hk_metric_payload(prefix: str, metric: dict[str, float]) -> dict[str, float]:
     return {
         f"{prefix}/MSE_hk": float(metric["mse"]),
         f"{prefix}/MAE_hk": float(metric["mae"]),
         f"{prefix}/MaxAE_hk": float(metric["maxae"]),
     }
-
-
-def _render_representative_curve(case_entry: dict[str, Any]) -> Path:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    theta = np.asarray(case_entry["theta"], dtype=np.float64)
-    pred_hkappa = np.asarray(case_entry["pred_hkappa"], dtype=np.float64)
-    true_hkappa = np.asarray(case_entry["true_hkappa"], dtype=np.float64)
-    abs_err = np.asarray(case_entry["abs_err"], dtype=np.float64)
-    metrics = case_entry["summary"]
-
-    output_dir = Path(tempfile.mkdtemp(prefix="flower_eval_curve_"))
-    output_path = output_dir / f"{_sanitize_name(case_entry['case_key'])}.png"
-
-    fig, axes = plt.subplots(2, 1, figsize=(10.0, 7.0), sharex=True, constrained_layout=True)
-    axes[0].plot(theta, pred_hkappa, label="pred_hkappa", linewidth=1.6)
-    axes[0].plot(theta, true_hkappa, label="true_hkappa", linewidth=1.6)
-    axes[0].set_ylabel("h*kappa")
-    axes[0].legend(loc="best")
-    axes[0].grid(True, alpha=0.25)
-
-    axes[1].plot(theta, abs_err, color="tab:red", label="abs_err", linewidth=1.6)
-    axes[1].set_xlabel("theta")
-    axes[1].set_ylabel("|pred-true|")
-    axes[1].legend(loc="best")
-    axes[1].grid(True, alpha=0.25)
-
-    fig.suptitle(
-        f"{case_entry['case_key']} | RMSE={metrics['rmse']:.6e} | "
-        f"MAE={metrics['mae']:.6e} | MaxAE={metrics['max_abs_err']:.6e}"
-    )
-    fig.savefig(output_path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
 
 
 def _build_case_summary_table_payload(
@@ -220,41 +193,6 @@ def _build_case_curve_row(
     }
 
 
-def _match_case(case_rows: list[dict[str, Any]], target: str) -> list[dict[str, Any]]:
-    numeric_target = int(target) if target.isdigit() else None
-    return [
-        row
-        for row in case_rows
-        if row["case_key"] == target
-        or row["case_label"] == target
-        or (numeric_target is not None and int(row["case_id"]) == numeric_target)
-    ]
-
-
-def _select_representative_case(
-    case_rows: list[dict[str, Any]],
-    preferred_case_id: str | None,
-    *,
-    default_case_id: str | None = None,
-) -> dict[str, Any]:
-    ordered_rows = sorted(case_rows, key=_case_sort_key)
-    if not ordered_rows:
-        raise ValueError("No flower case slices are available for representative visualization.")
-    target = str(preferred_case_id).strip() if preferred_case_id is not None else ""
-    if target:
-        matches = _match_case(ordered_rows, target)
-        if matches:
-            return matches[0]
-        available = ", ".join(row["case_key"] for row in ordered_rows)
-        raise ValueError(f"Representative case {target!r} was not found. Available case slices: {available}.")
-    if default_case_id:
-        matches = _match_case(ordered_rows, str(default_case_id))
-        if matches:
-            return matches[0]
-        return ordered_rows[0]
-    return ordered_rows[0]
-
-
 def load_flower_dataset(path: str | Path) -> dict[str, Any]:
     dataset_path = Path(path)
     if not dataset_path.exists():
@@ -316,7 +254,6 @@ def evaluate_flower(
     model_path: str | Path,
     normalization_csv_path: str | Path | None,
     device: torch.device,
-    representative_case_id: str | None = None,
     angle_bin_deg: float = 30.0,
 ) -> dict[str, Any]:
     bin_deg = validate_angle_bin_deg(angle_bin_deg)
@@ -386,12 +323,6 @@ def evaluate_flower(
 
     numeric_vs_analytic = compute_metrics(numeric, hkappa_target)
     model_vs_analytic = compute_metrics(prediction, hkappa_target)
-    default_case_id = f"acute_{int(bundle['rho_models'][0])}/iter_1" if len(bundle["rho_models"]) == 1 else None
-    representative_case = _select_representative_case(
-        case_rows,
-        representative_case_id,
-        default_case_id=default_case_id,
-    )
     angle_bin_rows = build_angle_bin_rows(case_rows, bin_deg=bin_deg)
 
     return {
@@ -412,7 +343,6 @@ def evaluate_flower(
         "model_vs_analytic": model_vs_analytic,
         "cases": case_rows,
         "angle_bin_rows": angle_bin_rows,
-        "representative_case": representative_case,
         "failed_case_slices": failed_case_slices,
         "failed_case_count": int(len(failed_case_slices)),
         "by_iter": group_metric_rows(
@@ -527,12 +457,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--normalization-csv", type=str, default="")
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--angle-bin-deg", type=float, default=30.0)
-    parser.add_argument("--overview-output-dir", type=str, default=str(Path("out") / "curvature_viz" / "flower"))
     parser.add_argument(
-        "--representative-case-id",
+        "--output-dir",
         type=str,
-        default="",
-        help="Optional case selector for the SwanLab representative curve. Accepts case_id, exp_id, or case_key like smooth_256/iter_1.",
+        default=str(Path("out") / "curvature_viz" / "flower"),
     )
     add_swanlab_args(parser)
     return parser
@@ -546,15 +474,7 @@ def main() -> None:
         model_path=args.model_path,
         normalization_csv_path=args.normalization_csv or None,
         device=device,
-        representative_case_id=args.representative_case_id or None,
         angle_bin_deg=args.angle_bin_deg,
-    )
-    overview_output_dir = ensure_output_dir(args.overview_output_dir)
-    representative_rho = int(result["representative_case"]["rho_model"])
-    overview_path = render_curvature_overview(
-        [result["representative_case"]],
-        overview_output_dir / f"flower_curvature_error_rho{representative_rho}.png",
-        suptitle=f"Flower curvature overview (rho={representative_rho})",
     )
     print("Task: flower test_data evaluation for 3x3 stencil features -> h*kappa")
     print(f"Dataset file: {result['dataset_path']}")
@@ -569,18 +489,27 @@ def main() -> None:
     print(f"Model input dim: {result['model_input_dim']}")
     print(f"Device: {device}")
     print(f"Angle bin width: {result['angle_bin_deg']} deg")
-    print(f"Local overview image: {overview_path}")
     print(
         "Flower summary (model vs analytic): "
         f"RMSE={result['summary']['rmse']:.6e} | "
         f"MAE={result['summary']['mae']:.6e} | "
         f"MaxAE={result['summary']['max_abs_err']:.6e}"
     )
-    print(
-        "Representative case slice: "
-        f"{result['representative_case']['case_key']} "
-        f"(samples={result['representative_case']['sample_count']})"
+    if len(result["rho_models"]) != 1:
+        raise SystemExit(
+            f"flower.py expects exactly one rho_model in the dataset, "
+            f"got: {result['rho_models']}"
+        )
+    rho = int(result["rho_models"][0])
+    output_dir = ensure_output_dir(args.output_dir)
+    overview_cases = _select_overview_cases(result["cases"])
+    overview_path = render_curvature_overview(
+        overview_cases,
+        output_dir / f"flower_curvature_overview_rho{rho}.png",
+        suptitle=f"model_{rho} - data_{rho}",
+        layout="case_rows",
     )
+    print(f"Overview image: {overview_path}")
     print(f"Failed case slices: {result['failed_case_count']}")
     print("Primary comparisons against analytic h*kappa:")
     for metric_name in PRIMARY_COMPARISONS:
@@ -608,12 +537,10 @@ def main() -> None:
                 "normalization_source": result["normalization_source"],
                 "model_type": result["model_type"],
                 "sample_count": result["sample_count"],
-                "representative_case": result["representative_case"]["case_key"],
                 "angle_bin_deg": int(result["angle_bin_deg"]),
                 "device": str(device),
             },
         )
-        representative_curve_path = _render_representative_curve(result["representative_case"])
         run.log({
             "flower_eval/mse": result["summary"]["mse"],
             "flower_eval/rmse": result["summary"]["rmse"],
@@ -624,7 +551,7 @@ def main() -> None:
             "flower_eval/numeric_mae": result["numeric_summary"]["mae"],
             "flower_eval/numeric_max_abs_err": result["numeric_summary"]["max_abs_err"],
             "flower_eval/failed_case_count": result["failed_case_count"],
-            "flower_eval/representative_curve": _build_swanlab_image(swanlab, representative_curve_path),
+            "flower_eval/overview": _build_swanlab_image(swanlab, overview_path),
             "flower_eval/case_summary_table": _build_case_summary_table_payload(
                 swanlab,
                 result["cases"],
