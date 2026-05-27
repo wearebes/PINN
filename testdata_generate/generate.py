@@ -24,6 +24,7 @@ from testdata_generate.config import (
     flower_dataset_name,
     legacy_flower_scenarios,
     load_scenario_config,
+    make_scenarios_for_rho_model,
     normalize_test_iters,
 )
 from testdata_generate.reinit import LevelSetReinitializer
@@ -221,10 +222,15 @@ def _resolve_generation_config(config: TestDataConfig) -> TestDataConfig:
             )
         filtered_scenarios = filter_scenarios_by_rho_model(base.scenarios, requested_rho_model)
         if not filtered_scenarios:
-            available = ", ".join(str(item) for item in available_rho_models(base.scenarios))
-            raise ValueError(
-                f"No flower scenarios configured for rho_model={int(requested_rho_model)}. "
-                f"Available rho_model values: {available}."
+            # Not a legacy rho_model — auto-derive L and N via h = 1/(rho_model-1).
+            filtered_scenarios = make_scenarios_for_rho_model(int(requested_rho_model))
+            print(
+                f"[testdata_generate] rho_model={int(requested_rho_model)} not in legacy set; "
+                f"auto-computed scenarios: "
+                + ", ".join(
+                    f"{s.exp_id}(L={s.L:.6g}, N={s.N}, h={s.h:.6g})"
+                    for s in filtered_scenarios
+                )
             )
         dataset_name = base.dataset_name or flower_dataset_name(rho_model=int(requested_rho_model))
         return replace(
@@ -458,7 +464,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     source_group.add_argument(
         "--rho-model",
         type=int,
-        help=f"Target rho_model to generate. Available values: {available}.",
+        help=(
+            "Target rho_model (integer >= 4). "
+            f"Legacy pre-tuned values: {available}. "
+            "Any other value auto-computes L and N via h = 1/(rho_model-1) "
+            "with a 2-cell margin around the interface."
+        ),
     )
     source_group.add_argument(
         "--scenario-config",

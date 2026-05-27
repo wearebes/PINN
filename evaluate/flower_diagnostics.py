@@ -221,14 +221,9 @@ def _compute_per_iter_metrics(
                 row["numeric_mse"] = num_metrics["mse"]
                 row["numeric_mae"] = num_metrics["mae"]
                 row["numeric_maxae"] = num_metrics["maxae"]
-                mvn = compute_metrics(pred_m, num_m)
-                row["model_vs_numeric_mse"] = mvn["mse"]
-                row["model_vs_numeric_mae"] = mvn["mae"]
-                row["model_vs_numeric_maxae"] = mvn["maxae"]
             else:
                 for k in (
                     "numeric_mse", "numeric_mae", "numeric_maxae",
-                    "model_vs_numeric_mse", "model_vs_numeric_mae", "model_vs_numeric_maxae",
                 ):
                     row[k] = float("nan")
 

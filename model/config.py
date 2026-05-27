@@ -7,6 +7,8 @@ from typing import Any, Literal, Union
 
 
 ModelType = Literal["mlp", "cnn"]
+OptimizerType = Literal["adamw", "adam", "sgd"]
+LossFnType = Literal["mse", "mae", "huber"]
 
 
 def default_dataset_path() -> Path:
@@ -30,6 +32,8 @@ class _BaseTrainConfig:
     profile_cuda_timing: bool = False
     input_dim: int = 9
     raw_feature_dim: int = 9
+    optimizer_type: OptimizerType = "adamw"
+    loss_fn: LossFnType = "mse"
     dataset_path: Path = field(default_factory=default_dataset_path)
     output_model_path: Path = field(default_factory=default_output_model_path)
 
@@ -48,6 +52,20 @@ class CNN_TrainConfig(_BaseTrainConfig):
 
 
 TrainConfig = Union[MLP_TrainConfig, CNN_TrainConfig]
+
+__all__ = [
+    "ModelType",
+    "OptimizerType",
+    "LossFnType",
+    "MLP_TrainConfig",
+    "CNN_TrainConfig",
+    "TrainConfig",
+    "create_train_config",
+    "train_config_field_names",
+    "filter_train_config_overrides",
+    "default_dataset_path",
+    "default_output_model_path",
+]
 
 
 def _get_field_default(f: dataclasses.Field) -> Any:

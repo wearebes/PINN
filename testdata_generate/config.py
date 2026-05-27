@@ -116,6 +116,48 @@ def legacy_flower_scenarios() -> tuple[FlowerScenario, ...]:
     )
 
 
+# (exp_type, a, b, p) — the two canonical flower shapes used in all evaluations
+_FLOWER_SHAPES: tuple[tuple[str, float, float, int], ...] = (
+    ("smooth", 0.05, 0.15, 3),
+    ("acute", 0.075, 0.15, 3),
+)
+
+
+def make_scenarios_for_rho_model(rho_model: int) -> tuple[FlowerScenario, ...]:
+    """Build smooth + acute flower scenarios for any rho_model.
+
+    Domain parameters are derived from rho_model so that h = 1/(rho_model-1)
+    matches the training-data grid spacing exactly (or within one ULP when
+    2*r_max*(rho_model-1) is not an integer, e.g. for acute shapes).
+
+    Formula:
+        h = 1 / (rho_model - 1)
+        L = (b + a) + 2 * h          # interface fits with 2-cell margin
+        N = round(2 * L / h) + 1     # grid points consistent with h
+    """
+    rho = int(rho_model)
+    if rho < 4:
+        raise ValueError(f"rho_model must be >= 4, got {rho}.")
+    h = 1.0 / (rho - 1)
+    scenarios: list[FlowerScenario] = []
+    for exp_type, a, b, p in _FLOWER_SHAPES:
+        r_max = b + a
+        L = r_max + 2.0 * h
+        N = round(2.0 * L / h) + 1
+        scenarios.append(FlowerScenario(
+            exp_id=f"{exp_type}_{rho}",
+            experiment_type=exp_type,
+            rho_model=rho,
+            L=L,
+            N=N,
+            h=compute_grid_spacing(L=L, N=N),
+            a=a,
+            b=b,
+            p=p,
+        ))
+    return tuple(scenarios)
+
+
 def default_custom_dataset_name() -> str:
     return DEFAULT_CUSTOM_DATASET_NAME
 

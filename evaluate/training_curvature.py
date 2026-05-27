@@ -380,6 +380,10 @@ def run_training_curvature(*, dataset_path: str | Path, output_dir: str | Path) 
                 plot_sample_counts[split_name] += hist
                 plot_sample_counts["all"] += hist
 
+    # Clip x-axis to p0.5–p99.5 so the bulk of the distribution is visible
+    xlim_lo = histograms["all"].quantile(0.005)
+    xlim_hi = histograms["all"].quantile(0.995)
+
     fig, axes = plt.subplots(2, 2, figsize=(14.0, 10.0), constrained_layout=True)
     ax_sample = axes[0, 0]
     for split_name in ("train", "val", "test"):
@@ -388,6 +392,7 @@ def run_training_curvature(*, dataset_path: str | Path, output_dir: str | Path) 
     ax_sample.set_title("Sample curvature distribution")
     ax_sample.set_xlabel("h*kappa")
     ax_sample.set_ylabel("density")
+    ax_sample.set_xlim(xlim_lo, xlim_hi)
     ax_sample.grid(True, alpha=0.25)
     ax_sample.legend(loc="best")
 
@@ -400,6 +405,7 @@ def run_training_curvature(*, dataset_path: str | Path, output_dir: str | Path) 
     ax_compare.set_title("Sample vs geometry-deduplicated")
     ax_compare.set_xlabel("h*kappa")
     ax_compare.set_ylabel("density")
+    ax_compare.set_xlim(xlim_lo, xlim_hi)
     ax_compare.grid(True, alpha=0.25)
     ax_compare.legend(loc="best")
 
@@ -413,6 +419,7 @@ def run_training_curvature(*, dataset_path: str | Path, output_dir: str | Path) 
     ax_shapes.set_title("Geometry distribution by shape")
     ax_shapes.set_xlabel("h*kappa")
     ax_shapes.set_ylabel("density")
+    ax_shapes.set_xlim(xlim_lo, xlim_hi)
     ax_shapes.grid(True, alpha=0.25)
     ax_shapes.legend(loc="best")
 

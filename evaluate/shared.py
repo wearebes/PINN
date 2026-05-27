@@ -570,7 +570,6 @@ def group_metric_rows(
                 "sample_count": int(np.count_nonzero(mask)),
                 "numeric_vs_analytic": compute_metrics(numeric[mask], target[mask]),
                 "model_vs_analytic": compute_metrics(prediction[mask], target[mask]),
-                "model_vs_numeric": compute_metrics(prediction[mask], numeric[mask]),
             }
         )
     return rows

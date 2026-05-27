@@ -70,3 +70,18 @@ python -m testdata_generate.generate \
 
 tmux new -s 1024 
 control+b d
+
+```bash
+python -m evaluate.training_curvature --data dataset/266/266.h5 --output-dir dataset/266
+```
+
+```bash
+# 6. Evaluate ellipse
+# Cross-resolution (256 model on 276 grid)
+python -m evaluate.ellipse \
+  --rho-model 256 \
+  --model-path out/128/baseline_128_h-l2e-4.pt \
+  --normalization-csv out/128/baseline_128_h-l2e-4.csv \
+  --dataset-path dataset/256/256_h.h5 \
+  --output-dir out/128
+```

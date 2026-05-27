@@ -3,7 +3,9 @@
     "allow": [
       "Bash(Get-ChildItem -Path \"E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\" -Recurse -File)",
       "Bash(Select-Object -ExpandProperty FullName)",
-      "PowerShell(head -30)"
+      "PowerShell(head -30)",
+      "Bash(PowerShell -Command \"Get-ChildItem 'E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\dataset' -ErrorAction SilentlyContinue | Select-Object Name, Length\")",
+      "Bash(PowerShell -Command \"Get-ChildItem 'E:\\\\Research\\\\PDE\\\\MLP-field\\\\PINN\\\\dataset\\\\256' -ErrorAction SilentlyContinue | Select-Object Name\")"
     ]
   }
 }

@@ -249,10 +249,10 @@ def main() -> None:
     plot_path = _render_comparison_figure(
         rho_model=spec.rho_model,
         series_map=series_map,
-        output_path=output_dir / f"flower_rho{spec.rho_model}_model_vs_numeric_step_metrics.png",
+        output_path=output_dir / f"flower_rho{spec.rho_model}_step_metrics.png",
     )
     csv_path = _write_plot_csv(
-        output_path=output_dir / f"flower_rho{spec.rho_model}_model_vs_numeric_step_metrics.csv",
+        output_path=output_dir / f"flower_rho{spec.rho_model}_step_metrics.csv",
         series_map=series_map,
     )
 

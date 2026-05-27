@@ -63,7 +63,6 @@ def evaluate_split(*, dataset_path: str | Path, split_name: str, model_path: str
         "model_input_dim": int(feature_transform["output_dim"]),
         "numeric_vs_analytic": compute_metrics(numeric, hkappa_target),
         "model_vs_analytic": compute_metrics(prediction, hkappa_target),
-        "model_vs_numeric": compute_metrics(prediction, numeric),
     }
 
 
@@ -100,7 +99,7 @@ def main() -> None:
     print(f"Raw feature dim: {result['raw_feature_dim']}")
     print(f"Model input dim: {result['model_input_dim']}")
     print(f"Device: {device}")
-    for metric_name in ("numeric_vs_analytic", "model_vs_analytic", "model_vs_numeric"):
+    for metric_name in ("numeric_vs_analytic", "model_vs_analytic"):
         metric = result[metric_name]
         print(f"{metric_name}: MSE={metric['mse']:.6e} | MAE={metric['mae']:.6e}")
     if args.use_swanlab:
@@ -129,8 +128,6 @@ def main() -> None:
             "eval/numeric_vs_analytic_mae": result["numeric_vs_analytic"]["mae"],
             "eval/model_vs_analytic_mse": result["model_vs_analytic"]["mse"],
             "eval/model_vs_analytic_mae": result["model_vs_analytic"]["mae"],
-            "eval/model_vs_numeric_mse": result["model_vs_numeric"]["mse"],
-            "eval/model_vs_numeric_mae": result["model_vs_numeric"]["mae"],
         })
         run.finish()
 

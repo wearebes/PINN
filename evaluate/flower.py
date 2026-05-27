@@ -43,7 +43,6 @@ from testdata_generate.generate import find_projection_theta
 
 REQUIRED_FIELDS = ("phi9", "xy", "hkappa_target", "case_id", "iter", "rho_model", "h")
 PRIMARY_COMPARISONS = ("numeric_vs_analytic", "model_vs_analytic")
-AUXILIARY_COMPARISONS = ("model_vs_numeric",)
 
 
 def _decode_json_attr(attrs: dict[str, Any], key: str) -> Any | None:
@@ -201,7 +200,6 @@ def _build_case_curve_row(
     abs_err = np.abs(pred_sorted - target_sorted)
     model_vs_analytic = compute_metrics(pred_sorted, target_sorted)
     numeric_vs_analytic = compute_metrics(numeric_sorted, target_sorted)
-    model_vs_numeric = compute_metrics(pred_sorted, numeric_sorted)
     return {
         "rho_model": int(rho_model),
         "case_id": int(case_id),
@@ -219,7 +217,6 @@ def _build_case_curve_row(
         "numeric_summary": _metric_summary(numeric_vs_analytic),
         "model_vs_analytic": model_vs_analytic,
         "numeric_vs_analytic": numeric_vs_analytic,
-        "model_vs_numeric": model_vs_numeric,
     }
 
 
@@ -389,7 +386,6 @@ def evaluate_flower(
 
     numeric_vs_analytic = compute_metrics(numeric, hkappa_target)
     model_vs_analytic = compute_metrics(prediction, hkappa_target)
-    model_vs_numeric = compute_metrics(prediction, numeric)
     default_case_id = f"acute_{int(bundle['rho_models'][0])}/iter_1" if len(bundle["rho_models"]) == 1 else None
     representative_case = _select_representative_case(
         case_rows,
@@ -412,10 +408,8 @@ def evaluate_flower(
         "angle_bin_deg": int(bin_deg),
         "summary": _metric_summary(model_vs_analytic),
         "numeric_summary": _metric_summary(numeric_vs_analytic),
-        "model_vs_numeric_summary": _metric_summary(model_vs_numeric),
         "numeric_vs_analytic": numeric_vs_analytic,
         "model_vs_analytic": model_vs_analytic,
-        "model_vs_numeric": model_vs_numeric,
         "cases": case_rows,
         "angle_bin_rows": angle_bin_rows,
         "representative_case": representative_case,
@@ -592,10 +586,6 @@ def main() -> None:
     for metric_name in PRIMARY_COMPARISONS:
         metric = result[metric_name]
         print(f"{metric_name}: {_format_metric(metric, include_maxae=True)}")
-    print("Auxiliary agreement check:")
-    for metric_name in AUXILIARY_COMPARISONS:
-        metric = result[metric_name]
-        print(f"{metric_name}: {_format_metric(metric, include_maxae=False)}")
     _print_case_iter_pivot(result["cases"])
     _print_case_angle_bins(result["angle_bin_rows"], bin_deg=int(result["angle_bin_deg"]))
     if args.use_swanlab:
@@ -633,10 +623,6 @@ def main() -> None:
             "flower_eval/numeric_rmse": result["numeric_summary"]["rmse"],
             "flower_eval/numeric_mae": result["numeric_summary"]["mae"],
             "flower_eval/numeric_max_abs_err": result["numeric_summary"]["max_abs_err"],
-            "flower_eval/model_vs_numeric_mse": result["model_vs_numeric_summary"]["mse"],
-            "flower_eval/model_vs_numeric_rmse": result["model_vs_numeric_summary"]["rmse"],
-            "flower_eval/model_vs_numeric_mae": result["model_vs_numeric_summary"]["mae"],
-            "flower_eval/model_vs_numeric_max_abs_err": result["model_vs_numeric_summary"]["max_abs_err"],
             "flower_eval/failed_case_count": result["failed_case_count"],
             "flower_eval/representative_curve": _build_swanlab_image(swanlab, representative_curve_path),
             "flower_eval/case_summary_table": _build_case_summary_table_payload(
