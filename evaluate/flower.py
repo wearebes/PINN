@@ -34,6 +34,7 @@ from evaluate.shared import (
     resolve_feature_transform,
     sanitize_name as _sanitize_name,
     validate_angle_bin_deg,
+    write_csv_rows,
 )
 from model.config import default_output_model_path
 from testdata_generate.generate import find_projection_theta
@@ -462,6 +463,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=str(Path("out") / "curvature_viz" / "flower"),
     )
+    parser.add_argument(
+        "--name", type=str, default="",
+        help="Filename stem, e.g. 'hgradient_model256-256'. "
+             "Controls PNG/CSV filenames and suptitle. "
+             "Default: flower_curvature_overview_rho{rho}.",
+    )
     add_swanlab_args(parser)
     return parser
 
@@ -502,14 +509,22 @@ def main() -> None:
         )
     rho = int(result["rho_models"][0])
     output_dir = ensure_output_dir(args.output_dir)
+    name = args.name or f"flower_curvature_overview_rho{rho}"
+    suptitle = args.name.replace("_", " - ") if args.name else f"model_{rho} - data_{rho}"
     overview_cases = _select_overview_cases(result["cases"])
     overview_path = render_curvature_overview(
         overview_cases,
-        output_dir / f"flower_curvature_overview_rho{rho}.png",
-        suptitle=f"model_{rho} - data_{rho}",
+        output_dir / f"{name}.png",
+        suptitle=suptitle,
         layout="case_rows",
     )
     print(f"Overview image: {overview_path}")
+    csv_path = write_csv_rows(
+        output_dir / f"{name}.csv",
+        result["angle_bin_rows"],
+        fieldnames=ANGLE_BIN_FIELDNAMES,
+    )
+    print(f"Angle bins CSV: {csv_path}")
     print(f"Failed case slices: {result['failed_case_count']}")
     print("Primary comparisons against analytic h*kappa:")
     for metric_name in PRIMARY_COMPARISONS:

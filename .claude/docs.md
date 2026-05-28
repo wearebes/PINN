@@ -575,16 +575,13 @@ PINN/
 ├── evaluate/
 │   ├── shared.py          compute_metrics, fit/apply/save/load feature_transform,
 │   │                      central_difference_hkappa, load_model, predict_full_batch,
-│   │                      group_metric_rows, checkpoint bundle I/O
-│   ├── split.py           in-distribution test split 评估
+│   │                      group_metric_rows, checkpoint bundle I/O;
+│   │                      angle-bin / case-summary / overview 绘图工具
+│   │                      （原 curvature_plotting.py 已并入此文件）
 │   ├── ellipse.py         受控椭圆 OOD 评估
 │   ├── flower.py          真 OOD flower 评估主入口
-│   ├── flower_diagnostics.py  per-iter 诊断, 相关性分析
 │   ├── flower_step_plots.py   reinit 步趋势图
-│   ├── flower_overview.py     多分辨率总览图
-│   ├── flower_step_plots.py   单分辨率步骤对比图
-│   ├── training_curvature.py  训练集 hkappa 分布统计
-│   └── curvature_plotting.py  公共绘图工具（angle bins, case summary, overview）
+│   └── training_curvature.py  训练集 hkappa 分布统计
 │
 ├── dataset/               训练 HDF5（*.h5）和 manifest（*_manifest.json）
 ├── test_data/             花朵测试 HDF5

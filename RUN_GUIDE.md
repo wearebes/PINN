@@ -29,7 +29,7 @@ python -m testdata_generate --rho-model 256 --test-iters 1,5,10,20 --output test
 # 每次运行产出一张 2行×3列 overview 图（smooth + acute，最大 iter）
 # 输出: out/curvature_viz/flower/flower_curvature_overview_rho<N>.png
 python -m evaluate.flower \
-  --data dataset/test_data/256_hgradient.h5 \
+  --data dataset/test_data/512_hgradient.h5 \
   --model-path out/256/baseline_256_hgradient.pt \
   --output-dir out/curvature_viz/flower
 
@@ -54,9 +54,9 @@ python -m evaluate.training_curvature --data dataset/266/266.h5 --output-dir dat
 # 5. Evaluate ellipse
 # Cross-resolution (256 model on 276 grid)
 python -m evaluate.ellipse \
-  --rho-model 256 \
-  --model-path out/128/baseline_128_h-l2e-4.pt \
-  --normalization-csv out/128/baseline_128_h-l2e-4.csv \
-  --dataset-path dataset/256/256_h.h5 \
-  --output-dir out/128
+  --rho-model 266 \
+  --model-path out/256/baseline_256.pt \
+  --normalization-csv out/256/baseline_256.csv \
+  --dataset-path dataset/train_data/266/266.h5 \
+  --output-dir out/266/ellipse
 ```

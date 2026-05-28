@@ -60,11 +60,10 @@ class EllipseCase:
 # 本次改造不暴露成可配项。
 # ============================================================
 ELLIPSE_CASES = (
-    EllipseCase(0.10, 0.09),
-    EllipseCase(0.22, 0.12),
-    EllipseCase(0.18, 0.16),
-    EllipseCase(0.34, 0.18),
-    EllipseCase(0.24, 0.12),
+    EllipseCase(0.20, 0.20),  # b/a = 1.00 纯圆
+    EllipseCase(0.20, 0.16),  # b/a = 0.80 训练分布内
+    EllipseCase(0.20, 0.10),  # b/a = 0.50 训练分布下界
+    EllipseCase(0.20, 0.06),  # b/a = 0.30 训练分布外
 )
 # ============================================================
 
@@ -134,6 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--normalization-csv", type=str, default="", help="Path to normalization CSV. Default: resolved from checkpoint or candidates.")
     parser.add_argument("--dataset-path", type=str, default="", help="Path to HDF5 dataset for metadata. Default: dataset/<rho>/<rho>.h5")
     parser.add_argument("--output-dir", type=str, default="", help="Output directory. Default: out/curvature_viz/ellipse/rho<rho>")
+    parser.add_argument("--name", type=str, default="", help="Filename stem for outputs (e.g. 'h_model64-64' -> h_model64-64.png/.csv). Default: 'ellipse_curvature_error_overview'/'ellipse_case_summary'.")
     parser.add_argument("--device", type=str, default="")
     add_swanlab_args(parser)
     return parser
@@ -147,6 +147,7 @@ def run_ellipse_evaluation(
     model_path_override: str | Path | None = None,
     normalization_csv_override: str | Path | None = None,
     dataset_path_override: str | Path | None = None,
+    name: str | None = None,
 ) -> dict[str, Any]:
     output_dir_path = ensure_output_dir(output_dir)
 
@@ -248,14 +249,16 @@ def run_ellipse_evaluation(
                 "b": float(case.b),
                 "model_path": str(model_path.resolve()),
                 "normalization_source": str(normalization_source),
-                "title": f"rho={rho_model}\na={case.a:.2f}, b={case.b:.2f}",
+                "title": f"rho={rho_model}\na={case.a:.2f}, b={case.b:.2f}\nb/a={case.b / case.a:.2f}",
             }
         )
 
     # ---- 4. render overview + summary CSV ----
+    png_name = f"{name}.png" if name else "ellipse_curvature_error_overview.png"
+    csv_name = f"{name}.csv" if name else "ellipse_case_summary.csv"
     overview_path = render_curvature_overview(
         case_rows,
-        output_dir_path / "ellipse_curvature_error_overview.png",
+        output_dir_path / png_name,
         suptitle="Static ellipse curvature error overview",
     )
     summary_rows = build_case_summary_rows(case_rows)
@@ -270,7 +273,7 @@ def run_ellipse_evaluation(
             }
         )
     summary_path = write_csv_rows(
-        output_dir_path / "ellipse_case_summary.csv",
+        output_dir_path / csv_name,
         list(summary_lookup.values()),
     )
     return {
@@ -298,6 +301,7 @@ def main() -> None:
         model_path_override=args.model_path or None,
         normalization_csv_override=args.normalization_csv or None,
         dataset_path_override=args.dataset_path or None,
+        name=args.name or None,
     )
     print("Task: static ellipse curvature evaluation")
     print(f"Device: {device}")
