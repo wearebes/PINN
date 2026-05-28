@@ -8,3 +8,7 @@ DS_Store
 .pyc
 .superpowers/
 .claude/settings.local.json
+.claude/launch.json
+.DS_Store
+AGENTS.md
+docs/
