@@ -263,7 +263,7 @@ def train_model(
 
         history["train_hk"].append(train_loss)
         history["val_hk"].append(val_loss)
-        print(f"Epoch {epoch:03d} | Train hk loss: {train_loss:.6e} | Val hk loss: {val_loss:.6e}")
+        print(f"Epoch {epoch:03d} | Train hk loss: {train_loss:.8e} | Val hk loss: {val_loss:.8e}")
 
         if swanlab_run is not None:
             swanlab_run.log({
