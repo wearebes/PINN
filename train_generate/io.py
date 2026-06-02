@@ -11,8 +11,8 @@ import numpy as np
 from .config import DataConfig, GenerationConfig, default_dataset_name
 
 
-DATASET_FORMAT_VERSION = 6
-SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4, 5, 6}
+DATASET_FORMAT_VERSION = 7
+SUPPORTED_DATASET_FORMAT_VERSIONS = {3, 4, 5, 6, 7}
 FIELD_ORDER = ("phi9", "features", "hkappa_target")
 FIELD_DTYPES = {
     "phi9": np.float32,
@@ -169,7 +169,17 @@ def save_training_dataset_hdf5(
         handle.attrs["output_dir"] = str(Path(generation_cfg.output_dir))
         handle.attrs["dataset_name"] = str(generation_cfg.dataset_name)
         handle.attrs["scale_h"] = bool(data_cfg.scale_h)
-        handle.attrs["feature_transform"] = "phi9_over_h" if data_cfg.scale_h else "phi9"
+        _has_alpha = bool(data_cfg.augment_scale_alpha)
+        _grad      = bool(data_cfg.augment_gradient)
+        _sh        = bool(data_cfg.scale_h)
+        if _has_alpha:
+            _ft = "phi9nx9ny9_over_ah" if _grad else "phi9_over_ah"
+        elif _sh:
+            _ft = "phi9nx9ny9_over_h"  if _grad else "phi9_over_h"
+        else:
+            _ft = "phi9+nx9+ny9"       if _grad else "phi9"
+        handle.attrs["feature_transform"] = _ft
+        handle.attrs["augment_scale_alpha_json"] = json.dumps(list(data_cfg.augment_scale_alpha))
         handle.create_dataset("resolutions", data=np.asarray(data_cfg.resolutions, dtype=np.int32))
         handle.create_dataset("blueprints_json", data=json.dumps(bundle.get("blueprints", [])).encode("utf-8"))
         split_group = handle.create_group("split_blueprint_indices")
@@ -183,6 +193,12 @@ def save_training_dataset_hdf5(
                 group.create_dataset(
                     field_name,
                     data=np.asarray(split[field_name], dtype=FIELD_DTYPES[field_name]),
+                    compression="gzip",
+                )
+            if "alpha_scale" in split:
+                group.create_dataset(
+                    "alpha_scale",
+                    data=np.asarray(split["alpha_scale"], dtype=np.float32),
                     compression="gzip",
                 )
 
@@ -269,6 +285,9 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                     ),
                     "scale_h": bool(handle.attrs.get("scale_h", False)),
                     "feature_transform": str(handle.attrs.get("feature_transform", "phi9")),
+                    "augment_scale_alpha": json.loads(
+                        str(handle.attrs.get("augment_scale_alpha_json", "[]"))
+                    ),
                 },
                 "generation": {
                     "generation_batch_size": int(handle.attrs.get("generation_batch_size", 0)),
@@ -301,14 +320,28 @@ def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
     feature_order = str(handle.attrs.get("feature_order", "phi9"))
     _v1_ok = feature_version == 1 and raw_feature_dim == 9 and feature_order == "phi9"
     _v2_ok = feature_version == 2 and raw_feature_dim == 27 and feature_order == "phi9+nx9+ny9"
-    if not (_v1_ok or _v2_ok):
+    _v3_ok = (
+        feature_version == 3
+        and raw_feature_dim == 27
+        and feature_order == "pca18(phi9+nx9+ny9)"
+    )
+    if not (_v1_ok or _v2_ok or _v3_ok):
         raise ValueError(
             f"Dataset {h5_path.resolve()} has an unsupported feature contract: "
             f"feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
-            "Supported: V1 (version=1, dim=9, order='phi9') or "
-            "V2 (version=2, dim=27, order='phi9+nx9+ny9'). "
+            "Supported: V1 (version=1, dim=9, order='phi9'), "
+            "V2 (version=2, dim=27, order='phi9+nx9+ny9'), or "
+            "V3 (version=3, dim_raw=27, order='pca18(phi9+nx9+ny9)'). "
             "Regenerate the dataset with the current train_generate pipeline."
         )
+    # V3 stores 18D PCA features; feature_dim_raw (27) is provenance only.
+    stored_feature_dim = (
+        int(handle.attrs.get("feature_dim_model", 18)) if feature_version == 3 else raw_feature_dim
+    )
+    _raw_alpha = handle.attrs.get("augment_scale_alpha_json", "[]")
+    if isinstance(_raw_alpha, bytes):
+        _raw_alpha = _raw_alpha.decode("utf-8")
+    augment_scale_alpha = tuple(float(x) for x in json.loads(str(_raw_alpha)))
     data_config = DataConfig(
         resolutions=tuple(int(item) for item in handle["resolutions"][:]),
         geometry_seed=int(handle.attrs.get("geometry_seed", DataConfig().geometry_seed)),
@@ -341,6 +374,7 @@ def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
             handle.attrs.get("ellipse_hp_newton_max_iter", DataConfig().ellipse_hp_newton_max_iter)
         ),
         scale_h=bool(handle.attrs.get("scale_h", False)),
+        augment_scale_alpha=augment_scale_alpha,
     )
     generation_config = normalize_generation_config(
         GenerationConfig(
@@ -373,6 +407,7 @@ def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
     return {
         "feature_version": feature_version,
         "raw_feature_dim": raw_feature_dim,
+        "stored_feature_dim": stored_feature_dim,
         "feature_order": feature_order,
         "data_config": data_config,
         "generation_config": generation_config,
@@ -420,7 +455,7 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
 
     with h5py.File(h5_path, "r") as handle:
         meta = _parse_hdf5_metadata(handle, h5_path)
-        raw_feature_dim = meta["raw_feature_dim"]
+        stored_feature_dim = meta["stored_feature_dim"]
         splits: dict[str, dict[str, np.ndarray]] = {}
         for split_name in ("train", "val", "test"):
             if split_name not in handle:
@@ -435,15 +470,17 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
             features = np.asarray(group["features"][:], dtype=np.float32) if "features" in group else phi9.copy()
             if phi9.ndim != 2 or phi9.shape[1] != 9:
                 raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {phi9.shape}.")
-            if features.ndim != 2 or features.shape[1] != raw_feature_dim:
+            if features.ndim != 2 or features.shape[1] != stored_feature_dim:
                 raise ValueError(
-                    f"Split {split_name!r} features must have shape (N, {raw_feature_dim}), got {features.shape}."
+                    f"Split {split_name!r} features must have shape (N, {stored_feature_dim}), got {features.shape}."
                 )
             splits[split_name] = {
                 "phi9": phi9,
                 "features": features,
                 "hkappa_target": np.asarray(group["hkappa_target"][:], dtype=np.float32),
             }
+            if "alpha_scale" in group:
+                splits[split_name]["alpha_scale"] = np.asarray(group["alpha_scale"][:], dtype=np.float32)
 
     split_blueprint_indices = meta["split_blueprint_indices"]
     blueprints = meta["blueprints"]
@@ -457,6 +494,7 @@ def load_training_arrays_from_hdf5(path: str | Path) -> dict[str, Any]:
         "splits": splits,
         "sizes": {name: int(split["features"].shape[0]) for name, split in splits.items()},
         "raw_feature_dim": meta["raw_feature_dim"],
+        "stored_feature_dim": meta["stored_feature_dim"],
         "feature_version": meta["feature_version"],
         "feature_order": meta["feature_order"],
     }

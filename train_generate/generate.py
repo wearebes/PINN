@@ -535,6 +535,19 @@ def normalize_shape_types(shape_types: tuple[str, ...] | list[str] | None) -> tu
     return tuple(normalized)
 
 
+def normalize_scale_alpha(values: tuple[float, ...] | list[float] | None) -> tuple[float, ...]:
+    if not values:
+        return ()
+    normalized = tuple(sorted({float(v) for v in values}))
+    if any(v <= 0.0 for v in normalized):
+        raise ValueError(f"augment_scale_alpha values must be positive, got {list(normalized)}.")
+    if 1.0 not in normalized:
+        raise ValueError(
+            "augment_scale_alpha must include 1.0 because phi/h is the canonical deployment input."
+        )
+    return normalized
+
+
 def generate_blueprints(data_config: DataConfig) -> list[dict[str, Any]]:
     blueprints: list[dict[str, Any]] = []
     for rho in data_config.resolutions:
@@ -693,26 +706,51 @@ def sample_blueprint(
     rho = int(blueprint["meta"]["resolution"])
     X, Y = build_grid(rho)
     h_blueprint = float(blueprint["params"]["h"])
-    scale_h = bool(data_config.scale_h)
+    alpha_list = list(data_config.augment_scale_alpha)  # already normalized by generate_training_splits
+
     for initial_field_type in normalize_initial_field_types(data_config.initial_field_types):
         phi0 = build_phi0_grid(blueprint, initial_field_type, data_config=data_config, X=X, Y=Y)
         indices = interface_indices(phi0)
         if indices.size == 0:
             raise RuntimeError(
-                f"No interface nodes found for {blueprint['meta']['blueprint_id']} with initial_field_type={initial_field_type}."
+                f"No interface nodes found for {blueprint['meta']['blueprint_id']} "
+                f"with initial_field_type={initial_field_type}."
             )
-        phi9, features = build_raw_features(phi0, indices, scale_h=scale_h, h=h_blueprint)
-        if data_config.augment_gradient:
-            grad9 = extract_grad9(phi0, indices)  # (N, 9, 2)
-            # Layout B: [phi9_features (9) | nx9 (9) | ny9 (9)] → 27D
-            features = np.concatenate(
-                [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
-            ).astype(np.float32, copy=False)
-        hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
-        samples.append({"phi9": phi9, "features": features, "hkappa_target": hkappa})
-        if data_config.augment_sign_flip:
-            # grad(-φ) = -grad(φ), so normalised direction also negates → negate all 27 dims
-            samples.append({"phi9": -phi9, "features": -features, "hkappa_target": -hkappa})
+
+        phi9 = extract_phi9(phi0, indices)
+        base_hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
+        grad9 = extract_grad9(phi0, indices) if data_config.augment_gradient else None
+
+        def _append(feats, hkappa, alpha_arr=None, *, _phi9=phi9):
+            entry: dict[str, np.ndarray] = {"phi9": _phi9, "features": feats, "hkappa_target": hkappa}
+            if alpha_arr is not None:
+                entry["alpha_scale"] = alpha_arr
+            samples.append(entry)
+            if data_config.augment_sign_flip:
+                flipped: dict[str, np.ndarray] = {"phi9": -_phi9, "features": -feats, "hkappa_target": -hkappa}
+                if alpha_arr is not None:
+                    flipped["alpha_scale"] = alpha_arr
+                samples.append(flipped)
+
+        if alpha_list:
+            for alpha in alpha_list:
+                sf = np.float32(float(alpha) * h_blueprint)
+                feats = (phi9 / sf).astype(np.float32, copy=False)
+                if grad9 is not None:
+                    feats = np.concatenate(
+                        [feats, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+                    ).astype(np.float32, copy=False)
+                hkappa = (base_hkappa * float(alpha)).astype(np.float32, copy=False)
+                alpha_arr = np.full(len(phi9), float(alpha), dtype=np.float32)
+                _append(feats, hkappa, alpha_arr)
+        else:
+            _, feats = build_raw_features(phi0, indices, scale_h=bool(data_config.scale_h), h=h_blueprint)
+            if grad9 is not None:
+                feats = np.concatenate(
+                    [feats, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+                ).astype(np.float32, copy=False)
+            _append(feats, base_hkappa)
+
     return samples
 
 
@@ -735,11 +773,16 @@ def concat_split_samples(items: list[dict[str, np.ndarray]], *, feature_dim: int
             "features": np.zeros((0, feature_dim), dtype=np.float32),
             "hkappa_target": np.zeros((0, 1), dtype=np.float32),
         }
-    return {
+    result: dict[str, np.ndarray] = {
         "phi9": np.concatenate([item["phi9"] for item in items], axis=0).astype(np.float32, copy=False),
         "features": np.concatenate([item["features"] for item in items], axis=0).astype(np.float32, copy=False),
         "hkappa_target": np.concatenate([item["hkappa_target"] for item in items], axis=0).astype(np.float32, copy=False),
     }
+    if "alpha_scale" in items[0]:
+        result["alpha_scale"] = np.concatenate(
+            [item["alpha_scale"] for item in items], axis=0
+        ).astype(np.float32, copy=False)
+    return result
 
 
 def _count_shapes_for_indices(blueprints: list[dict[str, Any]], indices: list[int]) -> dict[str, int]:
@@ -778,6 +821,7 @@ def generate_training_splits(
         ellipse_hp_dps=int(data_config.ellipse_hp_dps),
         ellipse_hp_newton_max_iter=int(data_config.ellipse_hp_newton_max_iter),
         scale_h=bool(data_config.scale_h),
+        augment_scale_alpha=normalize_scale_alpha(data_config.augment_scale_alpha),
     )
     blueprints = generate_blueprints(data_config)
     split_indices = split_blueprint_indices(
@@ -857,6 +901,10 @@ def _parse_str_tuple(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+def _parse_float_tuple(raw: str) -> tuple[float, ...]:
+    return tuple(float(part.strip()) for part in raw.split(",") if part.strip())
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     data_cfg = DataConfig()
     generation_cfg = GenerationConfig()
@@ -904,6 +952,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=data_cfg.scale_h,
         help="If set, write features = phi9 / h (per blueprint). Default off; features == phi9.",
     )
+    parser.add_argument(
+        "--augment-alpha",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated alpha values for training-only augmentation. "
+            "Each alpha adds samples (phi/(alpha*h), alpha*h*kappa). "
+            "Must include 1.0 (deployment input remains phi/h). "
+            "Example: '0.5,1.0,2.0'."
+        ),
+    )
     parser.add_argument("--num-workers", type=int, default=generation_cfg.num_workers)
     parser.add_argument("--generation-batch-size", type=int, default=generation_cfg.generation_batch_size)
     return parser
@@ -933,6 +992,7 @@ def main() -> None:
         ellipse_hp_dps=args.ellipse_hp_dps,
         ellipse_hp_newton_max_iter=args.ellipse_hp_newton_max_iter,
         scale_h=bool(args.scale_h),
+        augment_scale_alpha=_parse_float_tuple(args.augment_alpha) if args.augment_alpha else (),
     )
     generation_config = normalize_generation_config(
         GenerationConfig(

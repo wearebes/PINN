@@ -42,6 +42,7 @@ class _BaseTrainConfig:
 class MLP_TrainConfig(_BaseTrainConfig):
     hidden_units: int = 128
     batch_size: int = 256
+    use_pca: bool = False
 
 
 @dataclass(frozen=True)

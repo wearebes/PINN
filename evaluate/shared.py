@@ -46,6 +46,15 @@ def normalization_csv_candidates(model_path: str | Path) -> list[Path]:
     ]
 
 
+def feature_transform_npz_candidates(model_path: str | Path) -> list[Path]:
+    """V3 PCA-18 sidecar locations checked next to a checkpoint."""
+    model_path = Path(model_path)
+    return [
+        model_path.with_name(f"{model_path.stem}_pca18_transform.npz"),
+        model_path.with_name(f"{model_path.stem}.npz"),
+    ]
+
+
 def _as_float32_array(value: np.ndarray | list[float]) -> np.ndarray:
     return np.asarray(value, dtype=np.float32)
 
@@ -202,21 +211,63 @@ def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
     out["transform_kind"] = str(out["transform_kind"])
     out["mean"] = _as_float32_array(out["mean"])
     out["std"] = _as_float32_array(out["std"])
-    legacy_pca_enabled = bool(out.get("pca_enabled", False))
-    legacy_pca_dim = int(out.get("pca_dim", out["output_dim"]))
-    legacy_components = np.asarray(out.get("components", np.zeros((0, out["raw_feature_dim"]), dtype=np.float32)), dtype=np.float32)
-    legacy_eigenvalues = np.asarray(out.get("eigenvalues", np.zeros((0,), dtype=np.float32)), dtype=np.float32)
     if out["mean"].shape != (out["raw_feature_dim"],) or out["std"].shape != (out["raw_feature_dim"],):
         raise ValueError("Feature transform mean/std shapes do not match raw_feature_dim.")
     if np.any(out["std"] <= 0.0):
         raise ValueError("Feature transform std must be strictly positive.")
+
+    # ── V3: standardize(27D) -> PCA project to 18D ──
+    if out["transform_kind"] == "standardize_pca18":
+        _v3_ok = (
+            out["feature_version"] == 3
+            and out["raw_feature_dim"] == 27
+            and out["output_dim"] == 18
+            and out["feature_order"] == "pca18(phi9+nx9+ny9)"
+        )
+        if not _v3_ok:
+            raise ValueError(
+                "Invalid V3 feature transform: expected feature_version=3, raw_feature_dim=27, "
+                f"output_dim=18, feature_order='pca18(phi9+nx9+ny9)'. Got feature_version={out['feature_version']}, "
+                f"raw_feature_dim={out['raw_feature_dim']}, output_dim={out['output_dim']}, "
+                f"feature_order={out['feature_order']!r}."
+            )
+        components = out.get("components")
+        if components is None:
+            raise ValueError("V3 feature transform is missing the PCA 'components' matrix.")
+        components = np.asarray(components, dtype=np.float32)
+        if components.shape != (18, 27):
+            raise ValueError(f"V3 PCA components must have shape (18, 27), got {components.shape}.")
+        if np.any(~np.isfinite(components)):
+            raise ValueError("V3 PCA components contain non-finite values.")
+        result: dict[str, Any] = {
+            "transform_schema_version": int(out.get("transform_schema_version", 1)),
+            "transform_kind": "standardize_pca18",
+            "feature_version": 3,
+            "raw_feature_dim": 27,
+            "output_dim": 18,
+            "feature_order": "pca18(phi9+nx9+ny9)",
+            "source_split": out["source_split"],
+            "dataset_path": out["dataset_path"],
+            "mean": out["mean"],
+            "std": out["std"],
+            "components": components,
+        }
+        for opt_key in ("explained_variance", "explained_variance_ratio", "cumulative_evr"):
+            if out.get(opt_key) is not None:
+                result[opt_key] = out[opt_key]
+        return result
+
+    # ── V1/V2: pure standardization ──
+    legacy_components = np.asarray(
+        out.get("components", np.zeros((0, out["raw_feature_dim"]), dtype=np.float32)), dtype=np.float32
+    )
+    legacy_eigenvalues = np.asarray(out.get("eigenvalues", np.zeros((0,), dtype=np.float32)), dtype=np.float32)
     _v1_ok = (
         out["transform_kind"] == "standardize"
         and out["feature_version"] == 1
         and out["raw_feature_dim"] == 9
         and out["output_dim"] == 9
         and out["feature_order"] == "phi9"
-        and not legacy_pca_enabled
         and legacy_components.size == 0
         and legacy_eigenvalues.size == 0
     )
@@ -226,14 +277,13 @@ def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
         and out["raw_feature_dim"] == 27
         and out["output_dim"] == 27
         and out["feature_order"] == "phi9+nx9+ny9"
-        and not legacy_pca_enabled
         and legacy_components.size == 0
         and legacy_eigenvalues.size == 0
     )
     if not (_v1_ok or _v2_ok):
         raise ValueError(
-            "Only V1 (9D phi9 standardization) and V2 (27D phi9+nx9+ny9 standardization) "
-            "transforms are supported. PCA and NPZ-based workflows are no longer supported."
+            "Only V1 (9D phi9 standardization), V2 (27D phi9+nx9+ny9 standardization), and "
+            "V3 (standardize_pca18: 27D -> 18D) transforms are supported."
         )
     return {
         "transform_kind": "standardize",
@@ -245,6 +295,7 @@ def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
         "dataset_path": out["dataset_path"],
         "mean": out["mean"],
         "std": out["std"],
+        "components": np.zeros((0, out["raw_feature_dim"]), dtype=np.float32),
     }
 
 
@@ -281,16 +332,24 @@ def apply_feature_transform(features: np.ndarray, transform: dict[str, Any]) -> 
             f"Feature matrix must have shape (N, {state['raw_feature_dim']}), got {values.shape}."
         )
     standardized = (values - state["mean"].reshape(1, -1)) / state["std"].reshape(1, -1)
+    if state["transform_kind"] == "standardize_pca18":
+        return (standardized @ state["components"].T).astype(np.float32, copy=False)
     return standardized.astype(np.float32, copy=False)
 
 
 def save_feature_stats(path: str | Path, *, transform: dict[str, Any], dataset_path: str | Path) -> Path:
     state = validate_feature_transform({**transform, "dataset_path": str(Path(dataset_path).resolve())})
+    if state["transform_kind"] == "standardize_pca18":
+        raise ValueError(
+            "V3 (standardize_pca18) transforms cannot be saved as a CSV sidecar; the PCA components "
+            "matrix is persisted via the *_pca18_transform.npz file and embedded in the checkpoint. "
+            "Do not call save_feature_stats for the PCA pipeline."
+        )
     output_path = Path(path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.suffix.lower() != ".csv":
         raise ValueError(
-            f"Normalization output must be a CSV file for the V1 pipeline, got {output_path.resolve()}."
+            f"Normalization output must be a CSV file for the V1/V2 pipeline, got {output_path.resolve()}."
         )
     return save_phi9_normalization_csv(output_path, mean=state["mean"], std=state["std"], dataset_path=dataset_path)
 
@@ -299,13 +358,18 @@ def load_feature_transform(path: str | Path) -> dict[str, Any]:
     feature_path = Path(path)
     if not feature_path.exists():
         raise FileNotFoundError(f"Feature stats not found: {feature_path.resolve()}")
-    if feature_path.suffix.lower() != ".csv":
-        raise ValueError(
-            f"Only CSV normalization sidecars are supported in the V1 pipeline. "
-            f"Got {feature_path.resolve()}."
-        )
-    mean, std = load_phi9_normalization_csv(feature_path)
-    return build_legacy_feature_transform(mean, std)
+    suffix = feature_path.suffix.lower()
+    if suffix == ".npz":
+        from train_generate.pca_dataset import load_pca_transform_npz
+
+        return validate_feature_transform(load_pca_transform_npz(feature_path))
+    if suffix == ".csv":
+        mean, std = load_phi9_normalization_csv(feature_path)
+        return build_legacy_feature_transform(mean, std)
+    raise ValueError(
+        f"Unsupported feature-transform sidecar {feature_path.resolve()}. "
+        "Expected .csv (V1/V2 standardization) or .npz (V3 PCA-18)."
+    )
 
 
 def resolve_feature_transform(
@@ -314,20 +378,27 @@ def resolve_feature_transform(
     explicit_path: str | Path | None,
     checkpoint_meta: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
+    # 1. explicit path (dispatched by suffix inside load_feature_transform)
     if explicit_path:
         path = Path(explicit_path)
         return load_feature_transform(path), str(path.resolve())
+    # 2. embedded checkpoint transform (default for V3)
     checkpoint_transform = checkpoint_meta.get("feature_transform")
     if checkpoint_transform is not None:
         return validate_feature_transform(checkpoint_transform), "checkpoint"
+    # 3. auto sidecar discovery: V3 .npz first, then V1/V2 .csv
+    npz_candidates = feature_transform_npz_candidates(model_path)
+    for npz_path in npz_candidates:
+        if npz_path.exists():
+            return load_feature_transform(npz_path), str(npz_path.resolve())
     csv_candidates = normalization_csv_candidates(model_path)
     for csv_path in csv_candidates:
         if csv_path.exists():
             return load_feature_transform(csv_path), str(csv_path.resolve())
-    checked_paths = [str(path.resolve()) for path in csv_candidates]
+    checked_paths = [str(path.resolve()) for path in (*npz_candidates, *csv_candidates)]
     raise FileNotFoundError(
-        f"No V1 normalization transform found for checkpoint {Path(model_path).resolve()}. "
-        f"Checked embedded checkpoint metadata and CSV sidecars: {', '.join(checked_paths)}."
+        f"No feature transform found for checkpoint {Path(model_path).resolve()}. "
+        f"Checked embedded checkpoint metadata and sidecars: {', '.join(checked_paths)}."
     )
 
 
@@ -369,6 +440,20 @@ def compute_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, flo
         "maxae": float(np.max(np.abs(diff))),
     }
 
+def serialize_feature_transform_for_checkpoint(transform: dict[str, Any]) -> dict[str, Any]:
+    """Return a checkpoint-safe copy of feature_transform with numpy arrays converted to lists.
+
+    torch.save with weights_only=True (PyTorch >= 2.4 default) rejects numpy arrays.
+    validate_feature_transform() already converts lists back to arrays on load, so the
+    round-trip is lossless.
+    """
+    out = validate_feature_transform(transform)
+    for key in ("mean", "std", "components", "explained_variance", "explained_variance_ratio", "cumulative_evr"):
+        if key in out and out[key] is not None:
+            out[key] = np.asarray(out[key], dtype=np.float32).tolist()
+    return out
+
+
 def save_checkpoint_bundle(
     model: torch.nn.Module,
     *,
@@ -387,7 +472,7 @@ def save_checkpoint_bundle(
         "state_dict": {key: value.detach().cpu() for key, value in model.state_dict().items()},
     }
     if feature_transform is not None:
-        payload["feature_transform"] = validate_feature_transform(feature_transform)
+        payload["feature_transform"] = serialize_feature_transform_for_checkpoint(feature_transform)
     torch.save(payload, checkpoint_path)
     return checkpoint_path
 

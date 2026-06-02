@@ -36,6 +36,9 @@ class DataConfig:
     ellipse_hp_dps: int = 80
     ellipse_hp_newton_max_iter: int = 100
     scale_h: bool = False
+    # Training-only augmentation factors for pairs (phi/(alpha*h), alpha*h*kappa).
+    # Deployment-time input contract remains phi/h (alpha=1.0).
+    augment_scale_alpha: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)

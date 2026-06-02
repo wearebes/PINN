@@ -28,6 +28,7 @@ from evaluate.shared import (
     resolve_feature_transform,
     write_csv_rows,
 )
+from evaluate.feature_contract import use_scaled_h_features_for_inference
 from train_generate.generate import (
     build_grid,
     build_phi0_grid,
@@ -198,9 +199,11 @@ def run_ellipse_evaluation(
             )
         h_value = float(blueprint["params"]["h"])
         phi9, features = build_raw_features(
-            phi0, indices, scale_h=bool(data_config.scale_h), h=h_value
+            phi0, indices, scale_h=use_scaled_h_features_for_inference(data_config), h=h_value
         )
-        if feature_transform["feature_version"] == 2:
+        if feature_transform["feature_version"] in (2, 3):
+            # V2 keeps 27D; V3 (standardize_pca18) reuses the same 27D raw build,
+            # and apply_feature_transform standardizes(27D) then projects to 18D.
             grad9 = extract_grad9(phi0, indices)
             features = np.concatenate(
                 [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1

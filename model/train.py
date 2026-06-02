@@ -86,9 +86,9 @@ def _validate_split(split_name: str, split: dict[str, Any], *, require_phi9: boo
     if require_phi9 and (split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9):
         raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
     feat_dim = int(split["features"].shape[1]) if split["features"].ndim == 2 else -1
-    if split["features"].ndim != 2 or feat_dim not in (9, 27):
+    if split["features"].ndim != 2 or feat_dim not in (9, 18, 27):
         raise ValueError(
-            f"Split {split_name!r} features must have shape (N, 9) or (N, 27), got {split['features'].shape}."
+            f"Split {split_name!r} features must have shape (N, 9), (N, 18), or (N, 27), got {split['features'].shape}."
         )
     n = int(split["features"].shape[0])
     if n == 0:
@@ -380,17 +380,32 @@ def setup_device(args: argparse.Namespace) -> torch.device:
 def load_and_transform_dataset(
     args: argparse.Namespace, *, dataset_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    if getattr(args, "use_pca", False):
+        return _load_pca_dataset(args, dataset_path=dataset_path)
     raw_bundle = load_training_arrays_from_hdf5(dataset_path)
     validate_training_splits(raw_bundle)
     feature_transform = fit_feature_transform(
         raw_bundle["splits"]["train"]["features"], dataset_path=dataset_path,
     )
-    norm_output = (
-        Path(args.normalization_csv) if args.normalization_csv
-        else normalization_csv_path(args.output_model)
-    )
+    explicit_output = getattr(args, "feature_transform", "") or args.normalization_csv
+    norm_output = Path(explicit_output) if explicit_output else normalization_csv_path(args.output_model)
     saved_norm_path = save_feature_stats(norm_output, transform=feature_transform, dataset_path=dataset_path)
     return transform_dataset_bundle(raw_bundle, feature_transform=feature_transform), feature_transform, saved_norm_path
+
+
+def _load_pca_dataset(
+    args: argparse.Namespace, *, dataset_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    # Offline PCA-18: features are already projected to 18D in the *_pca18.h5
+    # dataset, so we skip transform_dataset_bundle entirely. The fitted V3
+    # transform is returned for embedding into the checkpoint, and the NPZ
+    # sidecar path takes the "normalization output" slot.
+    from train_generate.pca_dataset import ensure_pca_dataset
+
+    pca_h5_path, npz_path, feature_transform = ensure_pca_dataset(dataset_path)
+    raw_bundle = load_training_arrays_from_hdf5(pca_h5_path)
+    validate_training_splits(raw_bundle)
+    return raw_bundle, feature_transform, Path(npz_path)
 
 def build_train_config_from_args(
     args: argparse.Namespace,
@@ -408,6 +423,7 @@ def build_train_config_from_args(
     overrides["raw_feature_dim"]   = raw_feature_dim
     if overrides.get("batch_size") is None:        # keep config default when not passed
         overrides.pop("batch_size", None)
+    overrides.pop("model_type", None)              # already passed as positional arg
     return create_train_config(model_type, **overrides)
 
 # ── Argument parser
@@ -420,7 +436,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-type",       default="mlp",                  choices=["mlp", "cnn"])
     p.add_argument("--dataset-output",   default=str(default_dataset_path()))
     p.add_argument("--output-model",     default=str(default_output_model_path()))
-    p.add_argument("--normalization-csv", default="")
+    p.add_argument("--feature-transform", default="",
+                   help="Explicit feature-transform sidecar output (.csv for V1/V2). Supersedes --normalization-csv.")
+    p.add_argument("--normalization-csv", default="", help="Deprecated alias of --feature-transform (V1/V2 CSV only).")
+    p.add_argument("--use-pca", action="store_true",
+                   help="MLP only: train on the offline PCA-18 (V3) projection of a V2 27D dataset.")
     p.add_argument("--device",           default="")
     # architecture
     p.add_argument("--hidden-units",  type=int, default=mlp.hidden_units)
@@ -453,6 +473,9 @@ def main() -> None:
     model_type: ModelType = args.model_type   # type: ignore[assignment]
     dataset_path = Path(args.dataset_output)
 
+    if model_type == "cnn" and getattr(args, "use_pca", False):
+        raise ValueError("CNN does not support --use-pca; PCA-18 is an MLP-only feature path.")
+
     # 1. device
     device = setup_device(args)
 
@@ -460,16 +483,16 @@ def main() -> None:
     transformed_bundle, feature_transform, saved_norm_path = load_and_transform_dataset(
         args, dataset_path=dataset_path,
     )
-    raw_feature_dim = int(transformed_bundle["splits"]["train"]["features"].shape[1])
-    if model_type == "cnn" and raw_feature_dim != 9:
+    model_input_dim = int(transformed_bundle["splits"]["train"]["features"].shape[1])
+    if model_type == "cnn" and model_input_dim != 9:
         raise ValueError(
-            f"CNN requires 9D features, got raw_feature_dim={raw_feature_dim}. "
-            "Use --model-type mlp for 27D (V2) datasets."
+            f"CNN requires 9D features, got model input dim={model_input_dim}. "
+            "Use --model-type mlp for 27D (V2) or PCA-18 (V3) datasets."
         )
 
     # 3. config + seed
     train_config = build_train_config_from_args(
-        args, raw_feature_dim=raw_feature_dim, model_type=model_type,
+        args, raw_feature_dim=int(feature_transform["raw_feature_dim"]), model_type=model_type,
         feature_transform=feature_transform,
     )
     torch.manual_seed(train_config.seed)
