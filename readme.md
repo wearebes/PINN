@@ -18,8 +18,13 @@ python -m train_generate --output dataset/1024_hgradient.h5 --resolutions 1024 -
 
 # Alpha 增强：每个样本生成 alpha 份副本 (phi/(α·h), α·h·κ)，必须含 1.0
 # 样本量 × len(alpha)，推理契约不变（仍消费 phi/h）
-python -m train_generate --output dataset/128_ah.h5 --resolutions 128 --augment-alpha 0.5,1.0,2.0
-python -m train_generate --output dataset/128_a_gradient.h5 --resolutions 128 --augment-alpha 0.5,1.0,2.0 --augment-gradient
+
+python -m train_generate --output dataset/128_ah.h5 --resolutions 128 --augment-alpha 0.25,0.5,1.0
+python -m train_generate --output dataset/128_a_gradient.h5 --resolutions 128 --augment-alpha 0.25,0.5,1.0 --augment-gradient
+
+python -m train_generate --output dataset/256_ah.h5 --resolutions 256 --augment-alpha 0.25,0.5,1.0
+python -m train_generate --output dataset/256_a_gradient.h5 --resolutions 256 --augment-alpha 0.25,0.5,1.0 --augment-gradient
+
 
 # 2. Train
 python -m model.train \
@@ -88,7 +93,8 @@ python -m evaluate.ellipse \
   --dataset-path dataset/128_hgradient.h5 \
   --output-dir out/64/ellipse_pca18
 ```
-
+tmux ls
+tmux attach -t 1024
 tmux new -s 1024 
 control+b d
 

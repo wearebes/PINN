@@ -161,9 +161,9 @@ launch_train_one() {
           --use-swanlab
           --swanlab-mode offline
           --swanlab-logdir "$swan_dir"
-          --swanlab-project PINN
+          --swanlab-project geometry
           --swanlab-experiment-name "${variant}_${ds}"
-          --swanlab-tags "$variant"
+          --swanlab-tags "experiment2"
         )
       else
         warn "variant=${variant} ds=${ds} 无法写入 SwanLab 离线目录，跳过。"
