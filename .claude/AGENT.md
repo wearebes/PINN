@@ -28,60 +28,38 @@
 
 ## 近期实验方向
 
-### 当前进行中：3 种 feature variant × 2 分辨率（6 训练任务）
+### Experiment 2（已完成）：4 variant × 2 分辨率，MSE resolution sweep
 
-目标是对比三种 input 设计在 ρ=128、256 下的表现，全部 MLP（hidden=128，patience=30，L2=0），SwanLab offline 记录。
+目标：对比四种 input 设计在 ρ=128、256 下的 split 精度和跨分辨率泛化，全部 MLP（hidden=128，patience=30，L2=0）。
 
-| Variant | 输入特征 | 目标 | D | Param | 数据集格式 |
-|---------|---------|------|---|-------|-----------|
-| **V2.2** | phi9/(α·h) | α·h·κ | 9 | 50,945 | `{rho}_ah.h5` |
-| **V2.3** | phi9/(α·h) + nx9 + ny9 | α·h·κ | 27 | 53,249 | `{rho}_hgradient_ah.h5` |
-| **V3**   | PCA-18(phi9/h + nx9+ny9) | h·κ | 18 | 52,097 | `{rho}_hgradient.h5` + `--use-pca` |
+| Variant | 输入特征 | 目标 | D | 数据集 |
+|---------|---------|------|---|--------|
+| **V2.2** | phi9/(α·h) | α·h·κ | 9 | `{rho}_ah.h5` |
+| **V2.3** | phi9/(α·h) + nx9 + ny9 | α·h·κ | 27 | `{rho}_hgradient_ah.h5` |
+| **V3**   | PCA-18(phi9/h + nx9+ny9) | h·κ | 18 | `{rho}_hgradient.h5` + `--use-pca` |
+| **v2_hgrad** | phi9/h + nx9 + ny9 | h·κ | 27 | `{rho}_hgradient.h5` |
 
-**V2.2 / V2.3 说明**：alpha 增广（α ∈ {0.5, 1.0, 2.0}），输入按 phi9/(α·h) 缩放，目标为 α·h·κ。部署时 α=1 退化为标准 phi9/h → h·κ。ahk（α·h·κ）是**目标**，不作为输入特征（无 label leak）。
+**结果摘要（split MSE，`out/mse_sweep/mse_split.csv`）**：V3 和 v2_hgrad 在所有测试分辨率上明显优于 V2.2/V2.3；V3@256 在同分辨率测试下 split MSE ≈ 1.9e-7，接近 FD 精度量级。Alpha 增广（V2.2/V2.3）未带来 split 精度提升，但对 OOD flower 曲线的影响待进一步分析。
 
-**V3 说明**：从现有 `_hgradient.h5`（V2 27D）做 offline PCA-18 压缩，`--use-pca` 标志触发 `ensure_pca_dataset()` 自动生成 `_pca18.h5` sidecar，transform 存入 `.npz` + checkpoint。
+**数据集状态**：所有 6 个数据集均已生成。
 
-### 数据集状态（ρ=128/256）
+### 评估脚本
 
-| 文件 | 用途 | 状态 |
-|------|------|------|
-| `dataset/128_ah.h5` | V2.2 @ 128 | ✓ 已存在 |
-| `dataset/256_ah.h5` | V2.2 @ 256 | ✗ 待生成 |
-| `dataset/128_hgradient_ah.h5` | V2.3 @ 128 | ✗ 待生成 |
-| `dataset/256_hgradient_ah.h5` | V2.3 @ 256 | ✗ 待生成 |
-| `dataset/128_hgradient.h5` | V3 源 @ 128 | ✓ 已存在 |
-| `dataset/256_hgradient.h5` | V3 源 @ 256 | ✓ 已存在 |
+| 脚本 | 用途 |
+|------|------|
+| `evaluate/flower.py` | 主 OOD flower 评估（reinit 0..20 步）|
+| `evaluate/mse_resolution_sweep.py` | 单 variant 跨分辨率 MSE sweep |
+| `evaluate/mse_resolution_sweep_split.py` | 所有 variant split MSE 汇总 → `out/mse_sweep/mse_split.csv` |
+| `evaluate/mse_resolution_sweep_all.py` | 所有 variant 全量 sweep → `out/mse_sweep/mse_all.csv` |
+| `evaluate/flower_step_curves_all.py` | 所有 variant flower step MSE 曲线对比 |
+| `evaluate/flower_step_feature_input_compare.py` | feature/input 维度视角的 flower 曲线 |
+| `evaluate/test_split_mse.py` | 快速 split MSE 单次检查 |
 
-生成命令（CPU，无需 GPU）：
-```bash
-# V2.2 @ 256
-python -m train_generate --resolutions 256 --dataset-name 256_ah.h5 \
-    --augment-alpha 0.5,1.0,2.0 --num-workers 14
+### 历史实验
 
-# V2.3 @ 128 和 256
-python -m train_generate --resolutions 128 --dataset-name 128_hgradient_ah.h5 \
-    --augment-gradient --augment-alpha 0.5,1.0,2.0 --num-workers 14
-python -m train_generate --resolutions 256 --dataset-name 256_hgradient_ah.h5 \
-    --augment-gradient --augment-alpha 0.5,1.0,2.0 --num-workers 14
-```
-
-### 训练命令（无需改代码，现有 pipeline 直接支持）
-
-```bash
-# V2.2
-python -m model.train --dataset-output dataset/128_ah.h5 --output-model out/.../v22_128.pt --l2-reg 0
-# V2.3
-python -m model.train --dataset-output dataset/128_hgradient_ah.h5 --output-model out/.../v23_128.pt --l2-reg 0
-# V3
-python -m model.train --dataset-output dataset/128_hgradient.h5 --use-pca --output-model out/.../v3_128.pt --l2-reg 0
-```
-
-### 历史方向（已完成）
-
-- scale_h 对比：实验 1 已跑 64/128/256 隐层 × 有无 L2 weight decay
-- V2 27D 梯度特征：测试法向信息是否改善 OOD 泛化
-- HPC Slurm 3× 并行（ρ=256/266/276），SwanLab offline 模式记录
+- **Experiment 1**：scale_h 对比，64/128/256 隐层 × 有/无 L2 weight decay
+- V2 27D 梯度特征初探（法向信息对 OOD 泛化的影响）
+- HPC Slurm 3× 并行（ρ=256/266/276），SwanLab offline 模式
 
 ## 代码结构
 

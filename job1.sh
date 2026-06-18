@@ -3,8 +3,8 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:3
 #SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=48G
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=24G
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
