@@ -29,16 +29,18 @@ from evaluate.shared import (
     write_csv_rows,
 )
 from evaluate.feature_contract import use_scaled_h_features_for_inference
-from train_generate.generate import (
+from train_generate.geometry_core import (
     build_grid,
-    build_phi0_grid,
-    build_raw_features,
-    compute_hkappa_targets,
     ellipse_local_coordinates,
-    extract_grad9,
     interface_indices,
     project_theta_to_axis_aligned_ellipse,
     project_theta_to_axis_aligned_ellipse_high_precision,
+)
+from train_generate.generate import (
+    build_phi0_grid,
+    build_raw_features,
+    compute_hkappa_targets,
+    extract_grad9,
 )
 from train_generate.io import load_training_metadata_from_hdf5
 

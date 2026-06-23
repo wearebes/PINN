@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from math import pi
 
+from train_generate.geometry_core import (
+    DEFAULT_ELLIPSE_HP_DPS,
+    DEFAULT_ELLIPSE_HP_NEWTON_MAX_ITER,
+    DEFAULT_ELLIPSE_SDF_NEWTON_MAX_ITER,
+    DEFAULT_ELLIPSE_SDF_NEWTON_TOL,
+)
+
 
 def default_dataset_name() -> str:
     return "256.h5"
@@ -31,10 +38,10 @@ class DataConfig:
     ellipse_rotation_min: float = 0.0
     ellipse_rotation_max: float = pi
     ellipse_a_min_factor: float = 8.0
-    ellipse_sdf_newton_max_iter: int = 30
-    ellipse_sdf_newton_tol: float = 1.0e-12
-    ellipse_hp_dps: int = 80
-    ellipse_hp_newton_max_iter: int = 100
+    ellipse_sdf_newton_max_iter: int = DEFAULT_ELLIPSE_SDF_NEWTON_MAX_ITER
+    ellipse_sdf_newton_tol: float = DEFAULT_ELLIPSE_SDF_NEWTON_TOL
+    ellipse_hp_dps: int = DEFAULT_ELLIPSE_HP_DPS
+    ellipse_hp_newton_max_iter: int = DEFAULT_ELLIPSE_HP_NEWTON_MAX_ITER
     scale_h: bool = False
     # Training-only augmentation factors for pairs (phi/(alpha*h), alpha*h*kappa).
     # Deployment-time input contract remains phi/h (alpha=1.0).

@@ -1,5 +1,5 @@
-﻿from __future__ import annotations
-from typing import Callable
+from __future__ import annotations
+from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
@@ -40,6 +40,29 @@ class HKappaCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+class Resblock(nn.Module):
+    def __init__(self,hidden_units: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_units,hidden_units),
+            nn.ReLU(),
+        )
+    def forward (self, x:torch.Tensor) -> torch.Tensor:
+        return self.net(x)+ x
+        
+class ErrorResMLP(nn.Module):
+    def __init__(self, input_dim: int, hidden_units: int, output_dim: int) -> None:
+        super().__init__()
+        self.net= nn.Sequential(
+            nn.Linear( input_dim, hidden_units),
+            nn.ReLU(),
+            Resblock(hidden_units),
+            Resblock(hidden_units),
+            Resblock(hidden_units),
+            nn.Linear(hidden_units, output_dim),
+        )
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 def create_model(config: TrainConfig) -> nn.Module:
     if isinstance(config, MLP_TrainConfig):

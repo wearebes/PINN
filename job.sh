@@ -3,8 +3,8 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:2
 #SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=14
-#SBATCH --mem=48G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 
@@ -108,71 +108,84 @@ export OMP_NUM_THREADS=2
 export MKL_NUM_THREADS=2
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-# ---------- 6. Parallel training (two GPUs) ----------
-RES_GPU0=(64 128 256)
-RES_GPU1=(266 276 512)
-ALL_RES=("${RES_GPU0[@]}" "${RES_GPU1[@]}")
+# ---------- 6. DCTS (part2) 数据集：转换成 model.train 能吃的单文件格式 ----------
+DATASET_TAG="${DATASET_TAG:-main}"
+DCTS_PROCESSED_DIR="dataset/part2_dcts/${DATASET_TAG}/processed"
+TRAIN_H5="dataset/part2_dcts/${DATASET_TAG}/training/dcts_${DATASET_TAG}_v7.h5"
+
+if [[ ! -f "$TRAIN_H5" ]]; then
+  [[ -f "$DCTS_PROCESSED_DIR/train.h5" ]] \
+    || fatal "DCTS split 文件不存在: $DCTS_PROCESSED_DIR/train.h5（先跑 python -m train_generate.part2.dcts --main 生成）"
+  log_startup "[startup] 转换 DCTS -> v7 训练 HDF5: $TRAIN_H5"
+  python -m train_generate.part2.dcts.to_training_hdf5 --tag "$DATASET_TAG" \
+    >>"$STARTUP_LOG" 2>>"$ERROR_LOG" || fatal "to_training_hdf5 转换失败"
+fi
+
+# ---------- 7. Parallel training (two GPUs, weight_decay sweep) ----------
+WD_GPU0=("0" "1e-4")
+WD_GPU1=("1e-6" "1e-8")
+ALL_WD=("${WD_GPU0[@]}" "${WD_GPU1[@]}")
 FAILED=0
 PIDS=()
 
 launch_train() {
-  local r="$1"
+  local wd="$1"
   local gpu="$2"
-  local r_h="${r}_h"
-  local r_hgradient="${r}_hgradient"
-  local SWAN_DIR="$SWAN_ROOT/$r"
+  local tag="wd${wd}"
+  local SWAN_DIR="$SWAN_ROOT/$tag"
   local -a swan_args=()
-  local swan_enabled_for_r=0
+  local swan_enabled_for_tag=0
 
   if [[ $ENABLE_SWANLAB -eq 1 ]]; then
     if mkdir -p "$SWAN_DIR" 2>>"$ERROR_LOG" && touch "$SWAN_DIR/.write_test" 2>>"$ERROR_LOG"; then
       rm -f "$SWAN_DIR/.write_test"
-      swan_enabled_for_r=1
+      swan_enabled_for_tag=1
       swan_args=(
         --use-swanlab
         --swanlab-mode offline
         --swanlab-logdir "$SWAN_DIR"
         --swanlab-project PINN
-        --swanlab-experiment-name "baseline_${r_h}"
-        --swanlab-tags baseline_h
+        --swanlab-experiment-name "dcts_${DATASET_TAG}_${tag}"
+        --swanlab-tags dcts_wd_sweep
       )
     else
-      warn "res=${r} 无法写入 SwanLab 离线目录，跳过 SwanLab。SWAN_DIR=$SWAN_DIR"
+      warn "wd=${wd} 无法写入 SwanLab 离线目录，跳过 SwanLab。SWAN_DIR=$SWAN_DIR"
     fi
   fi
 
-  log_train "[launch] res=${r} gpu=${gpu} swanlog_enabled=${swan_enabled_for_r} swanlog=$SWAN_DIR out=$OUT_ROOT start=$(date -Is)"
+  log_train "[launch] wd=${wd} gpu=${gpu} swanlog_enabled=${swan_enabled_for_tag} swanlog=$SWAN_DIR out=$OUT_ROOT start=$(date -Is)"
   (
     export CUDA_VISIBLE_DEVICES="$gpu"
-    export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/${r}/.torchinductor"
-    export TRITON_CACHE_DIR="$TMPDIR/${r}/.triton"
-    export XDG_CACHE_HOME="$TMPDIR/${r}/.cache"
+    export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/${tag}/.torchinductor"
+    export TRITON_CACHE_DIR="$TMPDIR/${tag}/.triton"
+    export XDG_CACHE_HOME="$TMPDIR/${tag}/.cache"
     mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"
 
     if python -m model.train \
-        --dataset-output       "dataset/${r_hgradient}.h5" \
-        --output-model         "$OUT_ROOT/baseline_${r_hgradient}.pt" \
-        --normalization-csv    "$OUT_ROOT/baseline_${r_hgradient}.csv" \
-        --l2-reg 0 \
+        --dataset-output       "$TRAIN_H5" \
+        --output-model         "$OUT_ROOT/dcts_${DATASET_TAG}_${tag}.pt" \
+        --normalization-csv    "$OUT_ROOT/dcts_${DATASET_TAG}_${tag}.csv" \
+        --optimizer-type adamw \
+        --l2-reg "$wd" \
         "${swan_args[@]}" \
       >> "$TRAIN_LOG" 2>> "$ERROR_LOG"; then
-      log_train "[done]   res=${r} OK end=$(date -Is)"
+      log_train "[done]   wd=${wd} OK end=$(date -Is)"
     else
       rc=$?
-      log_train "[FAIL]   res=${r} exit=$rc end=$(date -Is)"
-      printf '%s\n' "[FAIL] res=${r} exit=$rc" >>"$ERROR_LOG"
+      log_train "[FAIL]   wd=${wd} exit=$rc end=$(date -Is)"
+      printf '%s\n' "[FAIL] wd=${wd} exit=$rc" >>"$ERROR_LOG"
       exit "$rc"
     fi
   ) &
   PIDS+=($!)
 }
 
-for r in "${RES_GPU0[@]}"; do
-  launch_train "$r" "$GPU0"
+for wd in "${WD_GPU0[@]}"; do
+  launch_train "$wd" "$GPU0"
 done
 
-for r in "${RES_GPU1[@]}"; do
-  launch_train "$r" "$GPU1"
+for wd in "${WD_GPU1[@]}"; do
+  launch_train "$wd" "$GPU1"
 done
 
 for pid in "${PIDS[@]}"; do
@@ -181,12 +194,12 @@ for pid in "${PIDS[@]}"; do
   fi
 done
 
-# ---------- 7. 汇总收尾 ----------
-TOTAL=${#ALL_RES[@]}
+# ---------- 8. 汇总收尾 ----------
+TOTAL=${#ALL_WD[@]}
 if [[ $ENABLE_SWANLAB -eq 1 ]] && find "$SWAN_ROOT" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
   SWAN_SYNC_ARGS=()
-  for r in "${ALL_RES[@]}"; do
-    SWAN_SYNC_ARGS+=("$SWAN_ROOT/$r")
+  for wd in "${ALL_WD[@]}"; do
+    SWAN_SYNC_ARGS+=("$SWAN_ROOT/wd${wd}")
   done
   echo "[summary] swanlab sync: swanlab sync ${SWAN_SYNC_ARGS[*]}"
 else

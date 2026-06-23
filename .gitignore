@@ -13,3 +13,5 @@ DS_Store
 AGENTS.md
 docs/
 cfd_static_bubble/
+twophaseflow_nn_gate/
+basilisk_reference_gate/

@@ -27,11 +27,8 @@ from testdata_generate.config import (
     normalize_test_iters,
 )
 from testdata_generate.reinit import LevelSetReinitializer
-from train_generate.generate import (
-    interface_indices,
-    build_raw_features,
-    extract_grad9,
-)
+from train_generate.geometry_core import interface_indices
+from train_generate.generate import build_raw_features, extract_grad9
 
 try:
     from scipy.optimize import minimize as _scipy_minimize

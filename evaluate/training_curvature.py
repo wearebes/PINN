@@ -22,7 +22,8 @@ from evaluate.shared import (
     init_swanlab_run,
     write_csv_rows,
 )
-from train_generate.generate import build_grid, build_phi0_grid, compute_hkappa_targets, interface_indices
+from train_generate.geometry_core import build_grid, interface_indices
+from train_generate.generate import build_phi0_grid, compute_hkappa_targets
 from train_generate.io import load_training_metadata_from_hdf5
 
 
