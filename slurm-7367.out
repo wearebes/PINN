@@ -1,0 +1,19 @@
+[startup] job_id=7367
+[startup] run_root=/home/mail/jiaqizhang/jcy/PINN/logs/7367
+[startup] swan_root=/home/mail/jiaqizhang/jcy/PINN/swanlog/7367
+[startup] out_root=/home/mail/jiaqizhang/jcy/PINN/out/7367
+[startup] swanlab_enabled=1
+[startup] cuda_module=cuda12.6
+[startup] conda_env=pinn
+[startup] cuda_visible_devices=0,1 gpu0=0 gpu1=1
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main/training/dcts_main_v7.h5
+[launch] wd=0 gpu=0 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd0 out=/home/mail/jiaqizhang/jcy/PINN/out/7367 start=2026-06-24T01:05:23+08:00
+[launch] wd=1e-4 gpu=0 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-4 out=/home/mail/jiaqizhang/jcy/PINN/out/7367 start=2026-06-24T01:05:23+08:00
+[launch] wd=1e-6 gpu=1 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-6 out=/home/mail/jiaqizhang/jcy/PINN/out/7367 start=2026-06-24T01:05:23+08:00
+[launch] wd=1e-8 gpu=1 swanlog_enabled=1 swanlog=/home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-8 out=/home/mail/jiaqizhang/jcy/PINN/out/7367 start=2026-06-24T01:05:23+08:00
+[done]   wd=1e-4 OK end=2026-06-24T01:53:22+08:00
+[done]   wd=0 OK end=2026-06-24T01:53:25+08:00
+[done]   wd=1e-6 OK end=2026-06-24T01:53:32+08:00
+[done]   wd=1e-8 OK end=2026-06-24T01:53:32+08:00
+[summary] swanlab sync: swanlab sync /home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd0 /home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-4 /home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-6 /home/mail/jiaqizhang/jcy/PINN/swanlog/7367/wd1e-8
+[summary] failures=0 / 4   swanlog: /home/mail/jiaqizhang/jcy/PINN/swanlog/7367   models: /home/mail/jiaqizhang/jcy/PINN/out/7367

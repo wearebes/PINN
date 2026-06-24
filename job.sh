@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=geometry
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:2
+
+#SBATCH --gres=gpu:4090:2
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=24G
