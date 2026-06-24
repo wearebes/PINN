@@ -66,12 +66,33 @@ def main(argv: list[str] | None = None) -> None:
     group.add_argument("--smoke", action="store_true", help="Smoke dataset (train 10k packs).")
     group.add_argument("--main", action="store_true", help="Main dataset (train 100k packs).")
     parser.add_argument("--no-augment", action="store_true", help="Disable D4 x sign augmentation.")
+    parser.add_argument("--nonsdf", action="store_true", help="Also generate the non-SDF field axis (doubles rows).")
+    parser.add_argument("--volume-mult", type=int, default=1, help="Scale per_bin (canonical packs) by this integer factor.")
+    parser.add_argument("--tag", default=None, help="Override output tag (default derived from --main/--smoke + --nonsdf + --volume-mult).")
     args = parser.parse_args(argv)
 
-    config = DctsConfig.smoke() if args.smoke else DctsConfig.main()
+    from dataclasses import replace
+    from pathlib import Path
+
+    base = DctsConfig.smoke() if args.smoke else DctsConfig.main()
+    overrides: dict = {}
+    tag_parts = [base.tag]
+    if args.volume_mult != 1:
+        if args.volume_mult < 1:
+            raise ValueError(f"--volume-mult must be >= 1, got {args.volume_mult}")
+        overrides["per_bin"] = {k: v * args.volume_mult for k, v in base.per_bin.items()}
+        tag_parts.append(f"{args.volume_mult}x")
     if args.no_augment:
-        from dataclasses import replace
-        config = replace(config, d4_sign_enabled=False)
+        overrides["d4_sign_enabled"] = False
+    if args.nonsdf:
+        overrides["nonsdf_enabled"] = True
+        tag_parts.append("sdfnonsdf")
+    default_tag = "_".join(tag_parts)
+    final_tag = args.tag or default_tag
+    if final_tag != base.tag:
+        overrides["tag"] = final_tag
+        overrides["output_dir"] = Path("dataset/part2_dcts") / final_tag
+    config = replace(base, **overrides) if overrides else base
     result = run_dcts(config)
     if not result["gates"]["all_passed"]:
         sys.exit(1)

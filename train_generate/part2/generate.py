@@ -507,12 +507,15 @@ def run_part2_dry_run(config: Part2Config) -> dict[str, Any]:
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     blueprints = build_part2_blueprints(config)
-    if len(blueprints) != 1000:
-        raise RuntimeError(f"Expected 1000 base geometries, got {len(blueprints)}.")
-    if sum(1 for item in blueprints if item["shape_type"] == "circle") != 200:
-        raise RuntimeError("Expected exactly 200 circle blueprints.")
-    if sum(1 for item in blueprints if item["shape_type"] == "ellipse") != 800:
-        raise RuntimeError("Expected exactly 800 ellipse blueprints.")
+    expected_circle = int(config.circle_eta_levels) * int(config.circle_phase_count)
+    expected_ellipse = int(config.ellipse_count)
+    expected_total = expected_circle + expected_ellipse
+    if len(blueprints) != expected_total:
+        raise RuntimeError(f"Expected {expected_total} base geometries ({expected_circle} circles + {expected_ellipse} ellipses), got {len(blueprints)}.")
+    if sum(1 for item in blueprints if item["shape_type"] == "circle") != expected_circle:
+        raise RuntimeError(f"Expected exactly {expected_circle} circle blueprints.")
+    if sum(1 for item in blueprints if item["shape_type"] == "ellipse") != expected_ellipse:
+        raise RuntimeError(f"Expected exactly {expected_ellipse} ellipse blueprints.")
 
     X, Y = build_grid(int(config.rho))
     node_rows: list[dict[str, Any]] = []
@@ -703,6 +706,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--circle-eta-levels", type=int, default=20)
     parser.add_argument("--circle-phase-count", type=int, default=10)
     parser.add_argument("--ellipse-count", type=int, default=800)
+    parser.add_argument("--nonsdf", action="store_true", help="Enable non-SDF field type alongside SDF (doubles the output).")
     args = parser.parse_args(argv)
     config = Part2Config(
         rho=int(args.rho),
@@ -711,6 +715,7 @@ def main(argv: list[str] | None = None) -> None:
         circle_eta_levels=int(args.circle_eta_levels),
         circle_phase_count=int(args.circle_phase_count),
         ellipse_count=int(args.ellipse_count),
+        nonsdf_enabled=bool(args.nonsdf),
     )
     default_scale = (
         int(args.circle_eta_levels) == 20

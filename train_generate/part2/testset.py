@@ -110,7 +110,7 @@ def build_part2_sdf_testset(
         circle_eta_levels=int(candidate_circle_eta_levels),
         circle_phase_count=int(candidate_circle_phase_count),
         ellipse_count=int(candidate_ellipse_count),
-        initial_field_types=("sdf",),
+        nonsdf_enabled=False,
     )
     used_signatures = _read_inventory_signatures(train_blueprint_inventories)
     blueprints = _select_non_overlapping_blueprints(

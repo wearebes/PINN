@@ -155,6 +155,18 @@ def run_gates(
         "passed": True, "kind": "diagnostic",
     }
 
+    # ---- Gate 12: non-SDF / SDF same interface (sign pattern) ----
+    if config.nonsdf_enabled:
+        max_mismatch = 0
+        for s in SPLITS:
+            r = augment.verify_nonsdf_consistency(merged_by_split[s])
+            max_mismatch = max(max_mismatch, int(r["sign_mismatch_count"]))
+        results["gate12_nonsdf_consistency"] = {
+            "max_sign_mismatch_count": max_mismatch, "passed": bool(max_mismatch == 0),
+        }
+    else:
+        results["gate12_nonsdf_consistency"] = {"max_sign_mismatch_count": 0, "passed": True, "kind": "skipped (nonsdf disabled)"}
+
     results["all_passed"] = bool(all(
         results[g]["passed"] for g in results if g != "all_passed"
     ))
@@ -167,6 +179,7 @@ def format_gates(results: dict) -> str:
         "gate1_budget", "gate2_circle_consistency", "gate3_ellipse_eta_range", "gate4_bin_coverage",
         "gate5_finite_unit_normals", "gate6_target_consistency", "gate7_d4_consistency",
         "gate8_sign_flip", "gate9_leakage", "gate10_log_uniformity", "gate11_normal_degeneration",
+        "gate12_nonsdf_consistency",
     ]
     for g in order:
         r = results[g]

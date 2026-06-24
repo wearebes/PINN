@@ -69,7 +69,8 @@ def write_split_hdf5(config: DctsConfig, merged: dict, *, split: str, path: Path
         handle.attrs["eta_min"] = float(config.eta_min)
         handle.attrs["eta_max"] = float(config.eta_max)
         handle.attrs["n_fine_bins"] = int(config.n_fine_bins)
-        handle.attrs["sdf_mode"] = config.sdf_mode
+        handle.attrs["sdf_mode"] = "sdf+nonsdf" if config.nonsdf_enabled else config.sdf_mode
+        handle.attrs["nonsdf_enabled"] = bool(config.nonsdf_enabled)
         handle.attrs["normal_source"] = config.normal_source
         handle.attrs["d4_sign_enabled"] = bool(config.d4_sign_enabled)
         handle.attrs["augmented"] = bool(config.d4_sign_enabled and split in config.augment_splits)

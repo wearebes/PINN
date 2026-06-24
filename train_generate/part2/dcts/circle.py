@@ -52,11 +52,16 @@ def generate_circle_packs(
     dx = ox[None, :] - cx[:, None]  # (n, 25)
     dy = oy[None, :] - cy[:, None]
     dist = np.sqrt(dx * dx + dy * dy)
-    phi25 = dist - radius[:, None]  # (n, 25)
+    phi25 = dist - radius[:, None]  # (n, 25) -- true SDF
     phi5 = phi25.reshape(n, 5, 5)
 
     phi9 = patch.inner_phi9(phi5)  # (n, 9)
     fd_grad_norm9 = patch.fd_grad_norm_inner(phi5)
+
+    # Non-SDF field (opt-in): same zero-crossing, quadratic, |grad| = 2*dist (not 1).
+    # Matches train_generate.geometry_core.build_circle_nonsdf exactly.
+    phi25_nonsdf = dist * dist - (radius * radius)[:, None]
+    phi9_nonsdf = patch.inner_phi9(phi25_nonsdf.reshape(n, 5, 5))
 
     # Analytic outward normals at the inner 9 nodes (STENCIL order).
     inner = patch.inner_offsets_xy()  # (9, 2)
@@ -79,6 +84,7 @@ def generate_circle_packs(
     return {
         "shape": "circle",
         "phi9": phi9,
+        "phi9_nonsdf": phi9_nonsdf,
         "nx9": nx9,
         "ny9": ny9,
         "hk_exact": hk_exact,
@@ -103,6 +109,7 @@ def _empty_batch() -> dict:
     return {
         "shape": "circle",
         "phi9": np.zeros((0, 9)),
+        "phi9_nonsdf": np.zeros((0, 9)),
         "nx9": np.zeros((0, 9)),
         "ny9": np.zeros((0, 9)),
         "hk_exact": np.zeros((0,)),

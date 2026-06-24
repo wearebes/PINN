@@ -176,8 +176,13 @@ def build_batch(
     Qv = b * np.sin(theta)
     dist = np.sqrt((u_nodes - Qu) ** 2 + (v_nodes - Qv) ** 2)
     inside = (u_nodes ** 2) / (a * a) + (v_nodes ** 2) / (b * b) < 1.0
-    phi25 = np.where(inside, -dist, dist)
+    phi25 = np.where(inside, -dist, dist)  # true SDF (needs the Newton projection above)
     phi5 = phi25.reshape(n, 5, 5)
+
+    # Non-SDF field (opt-in): same zero-crossing, quadratic implicit form, no
+    # projection needed -- matches train_generate.geometry_core.build_ellipse_nonsdf.
+    phi25_nonsdf = (u_nodes ** 2) / (a * a) + (v_nodes ** 2) / (b * b) - 1.0
+    phi9_nonsdf = patch.inner_phi9(phi25_nonsdf.reshape(n, 5, 5))
 
     # Per-node analytic outward normal (at the projection point), rotated to global.
     n_u = b * np.cos(theta)
@@ -214,6 +219,7 @@ def build_batch(
     return {
         "shape": "ellipse",
         "phi9": phi9,
+        "phi9_nonsdf": phi9_nonsdf,
         "nx9": nx9,
         "ny9": ny9,
         "hk_exact": hk_exact,
@@ -236,7 +242,7 @@ def _empty_batch() -> dict:
     z = np.zeros
     return {
         "shape": "ellipse",
-        "phi9": z((0, 9)), "nx9": z((0, 9)), "ny9": z((0, 9)),
+        "phi9": z((0, 9)), "phi9_nonsdf": z((0, 9)), "nx9": z((0, 9)), "ny9": z((0, 9)),
         "hk_exact": z((0,)), "eta": z((0,)),
         "fine_bin": z((0,), dtype=np.int64), "coarse_regime": z((0,), dtype=np.int64),
         "phi5": z((0, 5, 5)), "fd_grad_norm9": z((0, 9)), "medial_min_dist": z((0,)),

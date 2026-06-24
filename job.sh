@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=geometry
+#SBATCH --job-name=part2_dataset
 #SBATCH --partition=gpu
 
 #SBATCH --gres=gpu:4090:2
@@ -10,6 +10,17 @@
 #SBATCH --error=slurm-%j.err
 
 set -uo pipefail
+
+# Volume x field-mode experiment, modeled on job.sh's structure. wd is fixed
+# at 0 only (the wd sweep in job.sh was found degenerate -- 4 bit-identical
+# checkpoints, see memory part2-training-data-contract.md -- so there is no
+# point repeating it here). Checkpoints land in a STABLE dataset-tag-named
+# directory (not out/$JOB_ID/), since with 5 datasets across one job, an
+# opaque numeric job id tells you nothing about which checkpoint is which.
+#
+# GPU0 (one card): the two large sdf+nonsdf datasets, run SEQUENTIALLY.
+# GPU1 (one card): the other three datasets, run SEQUENTIALLY.
+#   main           (1x, sdf-only)        was already trained as run 7367 -- skipped here.
 
 # ---------- 0. 锁定值 ----------
 CUDA_MODULE="${CUDA_MODULE:-cuda12.6}"
@@ -41,7 +52,7 @@ cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 JOB_ID="${SLURM_JOB_ID:-local$$}"
 RUN_ROOT="$PWD/logs/$JOB_ID"
 SWAN_ROOT="$PWD/swanlog/$JOB_ID"
-OUT_ROOT="$PWD/out/$JOB_ID"
+OUT_ROOT="$PWD/out/dcts_volume_experiment"   # stable, NOT tied to JOB_ID -- self-describing filenames live here
 TMPDIR="$PWD/tmp/$JOB_ID"
 STARTUP_LOG="$RUN_ROOT/startup.log"
 TRAIN_LOG="$RUN_ROOT/train.log"
@@ -71,7 +82,7 @@ fi
 log_startup "[startup] job_id=$JOB_ID"
 log_startup "[startup] run_root=$RUN_ROOT"
 log_startup "[startup] swan_root=$SWAN_ROOT"
-log_startup "[startup] out_root=$OUT_ROOT"
+log_startup "[startup] out_root=$OUT_ROOT (stable, shared across all 5 datasets)"
 log_startup "[startup] swanlab_enabled=$ENABLE_SWANLAB"
 
 # ---------- 2. 环境 ----------
@@ -109,85 +120,89 @@ export OMP_NUM_THREADS=2
 export MKL_NUM_THREADS=2
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-# ---------- 6. DCTS (part2) 数据集：转换成 model.train 能吃的单文件格式 ----------
-DATASET_TAG="${DATASET_TAG:-main}"
-DCTS_PROCESSED_DIR="dataset/part2_dcts/${DATASET_TAG}/processed"
-TRAIN_H5="dataset/part2_dcts/${DATASET_TAG}/training/dcts_${DATASET_TAG}_v7.h5"
+# ---------- 6. dataset tags + conversion (DCTS processed/ -> single v7 training HDF5) ----------
+GPU0_TAGS=("main_2x_sdfnonsdf" "main_3x_sdfnonsdf")
+GPU1_TAGS=("main_sdfnonsdf" "main_2x" "main_3x")
+ALL_TAGS=("${GPU0_TAGS[@]}" "${GPU1_TAGS[@]}")
 
-if [[ ! -f "$TRAIN_H5" ]]; then
-  [[ -f "$DCTS_PROCESSED_DIR/train.h5" ]] \
-    || fatal "DCTS split 文件不存在: $DCTS_PROCESSED_DIR/train.h5（先跑 python -m train_generate.part2.dcts --main 生成）"
-  log_startup "[startup] 转换 DCTS -> v7 训练 HDF5: $TRAIN_H5"
-  python -m train_generate.part2.dcts.to_training_hdf5 --tag "$DATASET_TAG" \
-    >>"$STARTUP_LOG" 2>>"$ERROR_LOG" || fatal "to_training_hdf5 转换失败"
-fi
+for tag in "${ALL_TAGS[@]}"; do
+  processed_dir="dataset/part2_dcts/${tag}/processed"
+  train_h5="dataset/part2_dcts/${tag}/training/dcts_${tag}_v7.h5"
+  if [[ ! -f "$train_h5" ]]; then
+    [[ -f "$processed_dir/train.h5" ]] \
+      || fatal "DCTS split 文件不存在: $processed_dir/train.h5（先跑 python -m train_generate.part2.dcts --main ... 生成 tag=$tag）"
+    log_startup "[startup] 转换 DCTS -> v7 训练 HDF5: $train_h5"
+    python -m train_generate.part2.dcts.to_training_hdf5 --tag "$tag" \
+      >>"$STARTUP_LOG" 2>>"$ERROR_LOG" || fatal "to_training_hdf5 转换失败 (tag=$tag)"
+  fi
+done
 
-# ---------- 7. Parallel training (two GPUs, weight_decay sweep) ----------
-WD_GPU0=("0" "1e-4")
-WD_GPU1=("1e-6" "1e-8")
-ALL_WD=("${WD_GPU0[@]}" "${WD_GPU1[@]}")
+# ---------- 7. per-GPU SEQUENTIAL training, wd=0 only ----------
+# Self-describing checkpoint names: dcts_<tag>.pt / dcts_<tag>.csv -- no wd
+# suffix (always 0 here) and no job-id-only path, so any checkpoint's name
+# alone tells you exactly which dataset variant produced it.
 FAILED=0
 PIDS=()
 
-launch_train() {
-  local wd="$1"
-  local gpu="$2"
-  local tag="wd${wd}"
-  local SWAN_DIR="$SWAN_ROOT/$tag"
-  local -a swan_args=()
-  local swan_enabled_for_tag=0
-
-  if [[ $ENABLE_SWANLAB -eq 1 ]]; then
-    if mkdir -p "$SWAN_DIR" 2>>"$ERROR_LOG" && touch "$SWAN_DIR/.write_test" 2>>"$ERROR_LOG"; then
-      rm -f "$SWAN_DIR/.write_test"
-      swan_enabled_for_tag=1
-      swan_args=(
-        --use-swanlab
-        --swanlab-mode offline
-        --swanlab-logdir "$SWAN_DIR"
-        --swanlab-project PINN
-        --swanlab-experiment-name "dcts_${DATASET_TAG}_${tag}"
-        --swanlab-tags dcts_wd_sweep
-      )
-    else
-      warn "wd=${wd} 无法写入 SwanLab 离线目录，跳过 SwanLab。SWAN_DIR=$SWAN_DIR"
-    fi
-  fi
-
-  log_train "[launch] wd=${wd} gpu=${gpu} swanlog_enabled=${swan_enabled_for_tag} swanlog=$SWAN_DIR out=$OUT_ROOT start=$(date -Is)"
+launch_group() {
+  local gpu="$1"; shift
+  local tags=("$@")
   (
+    set -uo pipefail
     export CUDA_VISIBLE_DEVICES="$gpu"
-    export TORCHINDUCTOR_CACHE_DIR="$TMPDIR/${tag}/.torchinductor"
-    export TRITON_CACHE_DIR="$TMPDIR/${tag}/.triton"
-    export XDG_CACHE_HOME="$TMPDIR/${tag}/.cache"
-    mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"
+    for tag in "${tags[@]}"; do
+      train_h5="dataset/part2_dcts/${tag}/training/dcts_${tag}_v7.h5"
+      model_name="dcts_${tag}"
 
-    if python -m model.train \
-        --dataset-output       "$TRAIN_H5" \
-        --output-model         "$OUT_ROOT/dcts_${DATASET_TAG}_${tag}.pt" \
-        --normalization-csv    "$OUT_ROOT/dcts_${DATASET_TAG}_${tag}.csv" \
-        --optimizer-type adamw \
-        --l2-reg "$wd" \
-        "${swan_args[@]}" \
-      >> "$TRAIN_LOG" 2>> "$ERROR_LOG"; then
-      log_train "[done]   wd=${wd} OK end=$(date -Is)"
-    else
-      rc=$?
-      log_train "[FAIL]   wd=${wd} exit=$rc end=$(date -Is)"
-      printf '%s\n' "[FAIL] wd=${wd} exit=$rc" >>"$ERROR_LOG"
-      exit "$rc"
-    fi
+      cache_dir="$TMPDIR/${tag}"
+      export TORCHINDUCTOR_CACHE_DIR="$cache_dir/.torchinductor"
+      export TRITON_CACHE_DIR="$cache_dir/.triton"
+      export XDG_CACHE_HOME="$cache_dir/.cache"
+      mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$XDG_CACHE_HOME"
+
+      swan_args=()
+      swan_enabled_for_tag=0
+      if [[ $ENABLE_SWANLAB -eq 1 ]]; then
+        swan_dir="$SWAN_ROOT/$tag"
+        if mkdir -p "$swan_dir" 2>>"$ERROR_LOG" && touch "$swan_dir/.write_test" 2>>"$ERROR_LOG"; then
+          rm -f "$swan_dir/.write_test"
+          swan_enabled_for_tag=1
+          swan_args=(
+            --use-swanlab
+            --swanlab-mode offline
+            --swanlab-logdir "$swan_dir"
+            --swanlab-project PINN
+            --swanlab-experiment-name "$model_name"
+            --swanlab-tags dcts_volume_experiment
+          )
+        else
+          warn "tag=${tag} 无法写入 SwanLab 离线目录，跳过 SwanLab。SWAN_DIR=$swan_dir"
+        fi
+      fi
+
+      log_train "[launch] tag=${tag} gpu=${gpu} model=${model_name} swanlab=${swan_enabled_for_tag} start=$(date -Is)"
+      if python -m model.train \
+          --dataset-output    "$train_h5" \
+          --output-model      "$OUT_ROOT/${model_name}.pt" \
+          --normalization-csv "$OUT_ROOT/${model_name}.csv" \
+          --optimizer-type adamw \
+          --l2-reg 0 \
+          "${swan_args[@]}" \
+        >> "$TRAIN_LOG" 2>> "$ERROR_LOG"; then
+        log_train "[done]   tag=${tag} OK end=$(date -Is)"
+      else
+        rc=$?
+        log_train "[FAIL]   tag=${tag} exit=$rc end=$(date -Is)"
+        printf '%s\n' "[FAIL] tag=${tag} exit=$rc" >>"$ERROR_LOG"
+        exit "$rc"
+      fi
+    done
   ) &
   PIDS+=($!)
 }
 
-for wd in "${WD_GPU0[@]}"; do
-  launch_train "$wd" "$GPU0"
-done
-
-for wd in "${WD_GPU1[@]}"; do
-  launch_train "$wd" "$GPU1"
-done
+launch_group "$GPU0" "${GPU0_TAGS[@]}"
+launch_group "$GPU1" "${GPU1_TAGS[@]}"
 
 for pid in "${PIDS[@]}"; do
   if ! wait "$pid"; then
@@ -196,16 +211,17 @@ for pid in "${PIDS[@]}"; do
 done
 
 # ---------- 8. 汇总收尾 ----------
-TOTAL=${#ALL_WD[@]}
+TOTAL=${#ALL_TAGS[@]}
+done_count=$(grep -c '^\[done\]' "$TRAIN_LOG" 2>/dev/null || true)
 if [[ $ENABLE_SWANLAB -eq 1 ]] && find "$SWAN_ROOT" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
   SWAN_SYNC_ARGS=()
-  for wd in "${ALL_WD[@]}"; do
-    SWAN_SYNC_ARGS+=("$SWAN_ROOT/wd${wd}")
+  for tag in "${ALL_TAGS[@]}"; do
+    SWAN_SYNC_ARGS+=("$SWAN_ROOT/$tag")
   done
   echo "[summary] swanlab sync: swanlab sync ${SWAN_SYNC_ARGS[*]}"
 else
   echo "[summary] swanlab offline logs not available"
 fi
 
-echo "[summary] failures=$FAILED / $TOTAL   swanlog: $SWAN_ROOT   models: $OUT_ROOT"
+echo "[summary] task_failures=$FAILED/$TOTAL task_done=${done_count}/$TOTAL  swanlog: $SWAN_ROOT   models: $OUT_ROOT"
 exit $FAILED

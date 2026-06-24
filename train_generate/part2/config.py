@@ -47,7 +47,7 @@ class Part2Config:
     circle_eta_levels: int = 20
     circle_phase_count: int = 10
     ellipse_count: int = 800
-    initial_field_types: tuple[str, ...] = ("sdf", "nonsdf")
+    nonsdf_enabled: bool = False
     epsilon_zero: float = 1.0e-14
     epsilon_projection_report: float = 1.0e-12
     epsilon_distance_report: float = 1.0e-12
@@ -62,6 +62,10 @@ class Part2Config:
     ellipse_sdf_newton_tol: float = DEFAULT_ELLIPSE_SDF_NEWTON_TOL
     ellipse_hp_dps: int = DEFAULT_ELLIPSE_HP_DPS
     ellipse_hp_newton_max_iter: int = DEFAULT_ELLIPSE_HP_NEWTON_MAX_ITER
+
+    @property
+    def initial_field_types(self) -> tuple[str, ...]:
+        return ("sdf", "nonsdf") if self.nonsdf_enabled else ("sdf",)
 
     @property
     def h(self) -> float:

@@ -66,10 +66,21 @@ class DctsConfig:
     d4_sign_enabled: bool = True
     augment_splits: tuple[str, ...] = ("train",)  # val/test stored canonical-only
 
-    # --- metadata (Stage 0: SDF-only, analytic normals) ---
+    # --- metadata (Stage 0: SDF-only by default, analytic normals) ---
     sdf_mode: str = "sdf"
     normal_source: str = "analytic"
     h: float = 1.0
+
+    # --- non-SDF field axis (opt-in, OFF by default -- does not affect the
+    # canonical "main"/"smoke" presets or anything already generated/trained).
+    # When True, every canonical pack gets a second field representation built
+    # from the SAME geometry parameters (circle: (dist)^2-r^2; ellipse:
+    # u^2/a^2+v^2/b^2-1 -- exactly train_generate.geometry_core's
+    # build_circle_nonsdf/build_ellipse_nonsdf convention), expanded as a third
+    # row-multiplying axis alongside D4 x sign in augment.py. Target_hk, eta,
+    # nx9/ny9 (normal direction is field-mode-invariant) are unchanged; only
+    # phi9 and the downstream hk_central/features27 differ per field_mode. ---
+    nonsdf_enabled: bool = False
 
     # --- determinism ---
     base_seed: int = 42

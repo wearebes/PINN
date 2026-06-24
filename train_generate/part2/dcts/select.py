@@ -16,7 +16,7 @@ from train_generate.part2.dcts.config import DctsConfig, seed_from_parts
 
 # Canonical keys merged across batches.
 _ARRAY_KEYS = (
-    "phi9", "nx9", "ny9", "hk_exact", "eta", "fine_bin", "coarse_regime",
+    "phi9", "phi9_nonsdf", "nx9", "ny9", "hk_exact", "eta", "fine_bin", "coarse_regime",
     "phi5", "fd_grad_norm9", "medial_min_dist", "q", "psi", "eta_max", "radius",
 )
 _LIST_KEYS = ("geometry_id", "pack_id", "shape")
