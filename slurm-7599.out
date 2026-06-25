@@ -1,0 +1,25 @@
+[startup] job_id=7599
+[startup] run_root=/home/mail/jiaqizhang/jcy/PINN/logs/7599
+[startup] swan_root=/home/mail/jiaqizhang/jcy/PINN/swanlog/7599
+[startup] out_root=/home/mail/jiaqizhang/jcy/PINN/out/dcts_volume_experiment (stable, shared across all 5 datasets)
+[startup] swanlab_enabled=1
+[startup] cuda_module=cuda12.6
+[startup] conda_env=pinn
+[startup] cuda_visible_devices=0,1 gpu0=0 gpu1=1
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main_2x_sdfnonsdf/training/dcts_main_2x_sdfnonsdf_v7.h5
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main_3x_sdfnonsdf/training/dcts_main_3x_sdfnonsdf_v7.h5
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main_sdfnonsdf/training/dcts_main_sdfnonsdf_v7.h5
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main_2x/training/dcts_main_2x_v7.h5
+[startup] 转换 DCTS -> v7 训练 HDF5: dataset/part2_dcts/main_3x/training/dcts_main_3x_v7.h5
+[launch] tag=main_sdfnonsdf gpu=1 model=dcts_main_sdfnonsdf swanlab=1 start=2026-06-25T01:24:54+08:00
+[launch] tag=main_2x_sdfnonsdf gpu=0 model=dcts_main_2x_sdfnonsdf swanlab=1 start=2026-06-25T01:24:54+08:00
+[done]   tag=main_sdfnonsdf OK end=2026-06-25T02:59:25+08:00
+[launch] tag=main_2x gpu=1 model=dcts_main_2x swanlab=1 start=2026-06-25T02:59:25+08:00
+[done]   tag=main_2x_sdfnonsdf OK end=2026-06-25T03:37:37+08:00
+[launch] tag=main_3x_sdfnonsdf gpu=0 model=dcts_main_3x_sdfnonsdf swanlab=1 start=2026-06-25T03:37:37+08:00
+[done]   tag=main_2x OK end=2026-06-25T04:44:16+08:00
+[launch] tag=main_3x gpu=1 model=dcts_main_3x swanlab=1 start=2026-06-25T04:44:17+08:00
+[done]   tag=main_3x OK end=2026-06-25T07:19:13+08:00
+[done]   tag=main_3x_sdfnonsdf OK end=2026-06-25T08:02:20+08:00
+[summary] swanlab sync: swanlab sync /home/mail/jiaqizhang/jcy/PINN/swanlog/7599/main_2x_sdfnonsdf /home/mail/jiaqizhang/jcy/PINN/swanlog/7599/main_3x_sdfnonsdf /home/mail/jiaqizhang/jcy/PINN/swanlog/7599/main_sdfnonsdf /home/mail/jiaqizhang/jcy/PINN/swanlog/7599/main_2x /home/mail/jiaqizhang/jcy/PINN/swanlog/7599/main_3x
+[summary] task_failures=0/5 task_done=5/5  swanlog: /home/mail/jiaqizhang/jcy/PINN/swanlog/7599   models: /home/mail/jiaqizhang/jcy/PINN/out/dcts_volume_experiment
