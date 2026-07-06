@@ -1,0 +1,42 @@
+started_at=2026-07-05T03:50:45Z
+started_at=2026-07-05T03:56:45Z
+Traceback (most recent call last):
+  File "/Users/jcy/research/PINN/tem/stationary_source_rerun/run_full_stationary_source_pipeline.py", line 264, in <module>
+    main()
+  File "/Users/jcy/research/PINN/tem/stationary_source_rerun/run_full_stationary_source_pipeline.py", line 258, in main
+    process_report = run_curvature_process(methods=["NN27_RAW"], levels=[6, 7, 8])
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/stationary.py", line 447, in run_curvature_process
+    row, summary = _run_curvature_process_binary_one(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/stationary.py", line 129, in _run_curvature_process_binary_one
+    return _shared_run_curvature_process_binary_one(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 544, in run_curvature_process_binary_one
+    summary = summarize_curvature_process_csvs(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 719, in summarize_curvature_process_csvs
+    "force_band": curvature_band_stats(rows, band_name="force_band"),
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 1132, in curvature_band_stats
+    direct_sq = [(nn - native) ** 2 for nn, native in zip(kappa_nn, native_kappa, strict=True)]
+TypeError: zip() takes no keyword arguments
+started_at=2026-07-05T04:21:29Z
+started_at=2026-07-05T04:31:36Z
+Traceback (most recent call last):
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 841, in render_curvature_process_plate
+    import matplotlib as mpl
+ModuleNotFoundError: No module named 'matplotlib'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/jcy/research/PINN/tem/stationary_source_rerun/run_full_stationary_source_pipeline.py", line 264, in <module>
+    main()
+  File "/Users/jcy/research/PINN/tem/stationary_source_rerun/run_full_stationary_source_pipeline.py", line 258, in main
+    process_report = run_curvature_process(methods=["NN27_RAW"], levels=[6, 7, 8])
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/stationary.py", line 472, in run_curvature_process
+    return _write_curvature_process_report(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/stationary.py", line 153, in _write_curvature_process_report
+    return _shared_write_curvature_process_report(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 770, in write_curvature_process_report
+    figures = render_curvature_process_plate(
+  File "/Users/jcy/research/PINN/cfd_applications_cleanroom/cfd_apps/curvature_diagnostic_shared.py", line 846, in render_curvature_process_plate
+    raise StationaryGateError(f"python_plot_runtime_missing:{exc}") from exc
+cfd_applications_cleanroom.cfd_apps.curvature_diagnostic_shared.StationaryGateError: python_plot_runtime_missing:No module named 'matplotlib'
+started_at=2026-07-05T21:06:25Z

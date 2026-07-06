@@ -579,6 +579,23 @@ def predict_hkappa_full_batch(
     return prediction.astype(np.float64, copy=False).reshape(-1)
 
 
+@torch.inference_mode()
+def predict_hkappa_one_by_one(
+    model: torch.nn.Module,
+    features: np.ndarray,
+    *,
+    transform: dict[str, Any],
+    device: torch.device,
+) -> np.ndarray:
+    transformed = apply_feature_transform(features, transform)
+    outputs = np.empty(transformed.shape[0], dtype=np.float64)
+    for idx in range(transformed.shape[0]):
+        sample = torch.from_numpy(transformed[idx : idx + 1]).to(device)
+        pred = model(sample).detach().cpu().numpy().reshape(-1)
+        outputs[idx] = float(pred[0])
+    return outputs
+
+
 def csv_to_list(raw: str) -> list[str]:
     return [item.strip() for item in str(raw).split(",") if item.strip()]
 

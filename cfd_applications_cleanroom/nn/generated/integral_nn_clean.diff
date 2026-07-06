@@ -1,0 +1,9 @@
+--- vendor/basilisk_clean/src/integral.h
++++ generated/integral_nn_clean.h
+@@ -1,3 +1,6 @@
++/* Clean overlay generated from official integral.h.
++ * This file is an overlay artifact; the official source is not edited.
++ */
+ /**
+ # Integral formulation for surface tension
+ 

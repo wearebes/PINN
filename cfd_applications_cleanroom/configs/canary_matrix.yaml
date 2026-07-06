@@ -1,0 +1,9 @@
+stationary:
+  stock_reference:
+    methods: [VOF_HF_NATIVE]
+    levels: [5, 6, 7]
+    repeat: 3
+  canary:
+    methods: [CLSVOF_LS_NATIVE, NN_DISABLE, NN_PROBE_ONLY]
+    levels: [6]
+    repeat: 3

@@ -1,7 +1,0 @@
-[startup] job_id=7364
-[startup] run_root=/home/mail/jiaqizhang/jcy/PINN/logs/7364
-[startup] swan_root=/home/mail/jiaqizhang/jcy/PINN/swanlog/7364
-[startup] out_root=/home/mail/jiaqizhang/jcy/PINN/out/7364
-[startup] swanlab_enabled=1
-[startup] cuda_module=cuda12.6
-[startup] conda_env=pinn

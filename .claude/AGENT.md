@@ -6,6 +6,23 @@
 
 特征有三个主要版本：**V1** 9D（phi9，3×3 φ 值）、**V2** 27D（phi9 + nx9 + ny9，追加归一化梯度方向）、**V3** 18D（PCA-18 压缩自 V2 27D）。另有 alpha 增广变体 V2.2 / V2.3（见"近期实验方向"）。
 
+## 当前核心科研目标
+
+当前 CFD 应用验证的核心问题不是把问题直接切换到最高精度的正控宿主，也不是把 `VOF-HF` 误写成 NN 方法成功。真正目标是：
+
+> 在现有线上 solver 路径中，判断 NN curvature closure 能否在不同应用例子里改善 solver 结果，或至少证明模型结果具有应用价值。
+
+两条主线必须分开验证、分开表述：
+
+1. **Basilisk 线**：在 Basilisk 现有 `CLSVOF-LS` solver 路径里评估 NN curvature closure。主 baseline 是同一 `CLSVOF-LS` host 的 native 结果；`VOF-HF` 只能作为 positive control / well-balanced reference，不能替代主科研问题。
+2. **TwoPhaseFlow/OpenFOAM 线**：在 TwoPhaseFlow/OpenFOAM host 中独立验证 NN curvature closure 的应用价值。Basilisk 结果只能提供设计经验和对照逻辑，不能被当成 TwoPhaseFlow 的证据。
+
+每个应用例子都应优先回答：NN variant 相对同一线上 solver 的 native baseline 是否改善、持平、恶化，以及这种结果对模型应用价值说明了什么。不要把 `VOF-HF_NATIVE` 的极低残差解释成 `CLSVOF-LS + NN` 被修好。
+
+## Agent 入口约束
+
+进入本仓库做研究、计划、实验解释或代码修改前，必须先读 `.claude/AGENT.md`，并在需要命令、目录或旧 quick-start 时同时检查 `.claude/CLAUDE.md`。不要只凭全局记忆或旧对话判断当前研究目标。
+
 ## 工作方式
 
 倾向于先跑通最小 pipeline 验证想法是否有效，再做大范围适配。每次实现后展示实验结果（loss/MSE/MAE/MaxAE 对比、代表性预测图），方便一起判断方向。

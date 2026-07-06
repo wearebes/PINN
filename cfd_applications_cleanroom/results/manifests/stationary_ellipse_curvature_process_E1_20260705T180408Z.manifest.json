@@ -1,0 +1,41 @@
+{
+  "benchmark": "stationary_ellipse",
+  "case": "E1",
+  "rows": [
+    {
+      "benchmark": "stationary_ellipse",
+      "binary": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/stationary_ellipse_curvature_process_e1_nn27_d4_L7",
+      "binary_sha256": "8a4d451e9757ab775c4419188dee9ea2d66cdbb78f2bd5d9f9089ac85f374540",
+      "case_source_path": "cfd_applications_cleanroom/cases/stationary_ellipse/stationary_ellipse_curvature_process.c",
+      "case_source_sha256": "c7d74ae481657b05ad679e96ba089c85d1e50bf50318010fed11423c94307135",
+      "checkpoint_path": "out/128/baseline_128_hgradient.pt",
+      "checkpoint_sha256": "23f61820f836b647cc38b9c215937b5db925da3df9b3df124f142068ad105bd2",
+      "compile_command": "/Users/jcy/research/PINN/cfd_applications_cleanroom/build/basilisk_arm64/src/qcc -Wdimensions -DELLIPSE_A=0.4472136 -DELLIPSE_B=0.3577709 -autolink -O2 -DLEVEL=7 -DNN_MODE=3 -DMETHOD_ID=\\\"NN27_D4\\\" -I/Users/jcy/research/PINN/cfd_applications_cleanroom/nn stationary_ellipse_curvature_process.c /Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/nn_forward_clean.o /Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/geometry/L7/ellipse_geometry_clean.o -o /Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/stationary_ellipse_curvature_process_e1_nn27_d4_L7 -lm",
+      "compile_log": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/compile.log",
+      "curvature_process_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/curvature_process.csv",
+      "evidence_level": "controlled_diagnostic",
+      "grid_n": "128",
+      "level": "7",
+      "method": "NN27_D4",
+      "nn_weights_header_sha256": "560dd3aa8171a83344718dbfa335f9d2bc615e61fe1710681da4ba1b14b34378",
+      "official_source_manifest_sha256": "2c89a8abec308ad20caf3cd9a79cbf1c90e37fb9418edd2201780249668dad39",
+      "official_source_root": "cfd_applications_cleanroom/vendor/basilisk_clean/src",
+      "raw_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/surface_tension_trace.csv",
+      "repeat_id": "0",
+      "resolved_config_json": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/config.resolved.json",
+      "resolved_config_sha256": "ca4ed43ec9850c918c1b7daa0b23f4eb9903a4d38ee79322d1664dfa19a55d24",
+      "result_status": "curvature_process_diagnostic",
+      "run_command": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/stationary_ellipse_curvature_process_e1_nn27_d4_L7",
+      "run_id": "stationary_ellipse_curvature_process_E1_20260705T180408Z",
+      "source_hashes_compile_json": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/build/NN27_D4/L7/source_hashes_compile.json",
+      "source_hashes_json": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/source_hashes.json",
+      "status_file": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/status.json",
+      "stderr_log": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/stderr.log",
+      "stdout_log": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/stdout.log",
+      "summary_json": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/summary.json",
+      "surface_tension_trace_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260705T180408Z/NN27_D4_L7/surface_tension_trace.csv"
+    }
+  ],
+  "run_id": "stationary_ellipse_curvature_process_E1_20260705T180408Z",
+  "tier": "curvature-process"
+}

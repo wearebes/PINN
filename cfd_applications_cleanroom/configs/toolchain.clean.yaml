@@ -1,0 +1,6 @@
+bootstrap_seed_tarball: tem/rising_hgrad_confirmed_20260629/clean_download/basilisk.tar.gz
+route_vendor_tarball: cfd_applications_cleanroom/vendor/basilisk.tar.gz
+route_vendor_src: cfd_applications_cleanroom/vendor/basilisk_clean/src
+route_build_src: cfd_applications_cleanroom/build/basilisk_arm64/src
+active_untrusted_src: /private/tmp/basilisk/src
+known_good_native_case: basilisk_reference_gate/cases/spurious_vof_hf_gate.c

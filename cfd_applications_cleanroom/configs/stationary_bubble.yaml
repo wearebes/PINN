@@ -1,0 +1,32 @@
+{
+  "benchmark": "stationary",
+  "case_family": "stationary_bubble",
+  "physics": {
+    "geometry": "quadrant stationary bubble",
+    "diameter": 0.8,
+    "radius": 0.4,
+    "sigma": 1.0,
+    "rho": 1.0,
+    "laplace": 12000.0,
+    "mu_formula": "sqrt(diameter/laplace)",
+    "tmax_formula": "diameter^2/mu",
+    "primary_metric": "Ca=mu*Umax/sigma",
+    "tail_fraction": 0.2
+  },
+  "stock_reference": {
+    "method": "VOF_HF_NATIVE",
+    "levels": [5, 6, 7],
+    "repeat": 3,
+    "ca_tail_max_gate": 1e-12,
+    "full_time_fraction_gate": 0.999
+  },
+  "canary": {
+    "methods": ["CLSVOF_LS_NATIVE", "NN_DISABLE", "NN_PROBE_ONLY"],
+    "deployable_methods": ["NN27_RAW", "NN27_D4"],
+    "levels": [6],
+    "repeat": 3,
+    "full_time_fraction_gate": 0.999,
+    "sb_g4_max_abs_ca_gate": 1e-12,
+    "sb_g5_max_abs_ca_gate": 1e-12
+  }
+}

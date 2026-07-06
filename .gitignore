@@ -15,3 +15,20 @@ docs/
 cfd_static_bubble/
 twophaseflow_nn_gate/
 basilisk_reference_gate/
+.qcc*/
+slurm-*.out
+slurm-*.err
+tmp/
+swanlogs/
+screenlog.0
+
+# large experiment outputs & build artifacts — kept on disk, not tracked by git
+cfd_applications_cleanroom/build/
+cfd_applications_cleanroom/vendor/basilisk_clean/
+cfd_applications_cleanroom/results/raw/
+cfd_applications_cleanroom/results/source_data/
+cfd_applications_cleanroom/results/background/
+cfd_applications_cleanroom/results/tmp/
+cfd_applications_cleanroom/results/transfer/
+tem/**/run_*/
+tem/kappa_const_oracle/oracle_*_L6

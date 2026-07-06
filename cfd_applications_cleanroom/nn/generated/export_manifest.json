@@ -1,0 +1,73 @@
+{
+  "architecture": "MLP 27-128-128-128-128-1 ReLU",
+  "exporter": "cfd_applications_cleanroom/nn/export_clean_nn_assets.py",
+  "input_dim": 27,
+  "normalization": "z=(raw27-mean)/std from checkpoint feature_transform",
+  "rows": [
+    {
+      "checkpoint_path": "out/128/baseline_128_hgradient.pt",
+      "checkpoint_sha256": "23f61820f836b647cc38b9c215937b5db925da3df9b3df124f142068ad105bd2",
+      "feature_order": "phi9+nx9+ny9",
+      "hidden_units": 128,
+      "input_dim": 27,
+      "label": "nn27_r128",
+      "raw_feature_dim": 27,
+      "seed": 42,
+      "target": "h*kappa",
+      "weights_header": "cfd_applications_cleanroom/nn/generated/nn_weights_nn27_r128_clean.h",
+      "weights_header_sha256": "560dd3aa8171a83344718dbfa335f9d2bc615e61fe1710681da4ba1b14b34378"
+    },
+    {
+      "checkpoint_path": "out/256/baseline_256_hgradient.pt",
+      "checkpoint_sha256": "6ddc265a8330cd5c4ab3bbe83d55dc0f7820f6fa4c871aaf4e1a681dd36de12a",
+      "feature_order": "phi9+nx9+ny9",
+      "hidden_units": 128,
+      "input_dim": 27,
+      "label": "nn27_r256",
+      "raw_feature_dim": 27,
+      "seed": 42,
+      "target": "h*kappa",
+      "weights_header": "cfd_applications_cleanroom/nn/generated/nn_weights_nn27_r256_clean.h",
+      "weights_header_sha256": "175464d652d21f818cd2a3a2188db4dc40ff133858daca0ab4b69929891afc7e"
+    }
+  ],
+  "stencil_order": [
+    [
+      -1,
+      1
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      1,
+      1
+    ],
+    [
+      -1,
+      0
+    ],
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      -1,
+      -1
+    ],
+    [
+      0,
+      -1
+    ],
+    [
+      1,
+      -1
+    ]
+  ],
+  "target_definition": "h*kappa"
+}
