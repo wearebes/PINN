@@ -1,0 +1,68 @@
+{
+  "rendered": [
+    {
+      "case": "E1",
+      "grid_n": 64,
+      "level": 6,
+      "pdf": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l6_partial_ready_stationary_ellipse_curvature_process_e1_l6_plate.pdf",
+      "png": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l6_partial_ready_stationary_ellipse_curvature_process_e1_l6_plate.png",
+      "source_data_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e1_l6_partial_ready_stationary_ellipse_curvature_process_e1_l6_plate_source_data.csv",
+      "source_data_manifest": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e1_l6_partial_ready_stationary_ellipse_curvature_process_e1_l6_plate_manifest.json",
+      "svg": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l6_partial_ready_stationary_ellipse_curvature_process_e1_l6_plate.svg"
+    },
+    {
+      "case": "E1",
+      "grid_n": 128,
+      "level": 7,
+      "pdf": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l7_partial_ready_stationary_ellipse_curvature_process_e1_l7_plate.pdf",
+      "png": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l7_partial_ready_stationary_ellipse_curvature_process_e1_l7_plate.png",
+      "source_data_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e1_l7_partial_ready_stationary_ellipse_curvature_process_e1_l7_plate_source_data.csv",
+      "source_data_manifest": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e1_l7_partial_ready_stationary_ellipse_curvature_process_e1_l7_plate_manifest.json",
+      "svg": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e1_l7_partial_ready_stationary_ellipse_curvature_process_e1_l7_plate.svg"
+    },
+    {
+      "case": "E2",
+      "grid_n": 64,
+      "level": 6,
+      "pdf": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l6_partial_ready_stationary_ellipse_curvature_process_e2_l6_plate.pdf",
+      "png": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l6_partial_ready_stationary_ellipse_curvature_process_e2_l6_plate.png",
+      "source_data_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e2_l6_partial_ready_stationary_ellipse_curvature_process_e2_l6_plate_source_data.csv",
+      "source_data_manifest": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e2_l6_partial_ready_stationary_ellipse_curvature_process_e2_l6_plate_manifest.json",
+      "svg": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l6_partial_ready_stationary_ellipse_curvature_process_e2_l6_plate.svg"
+    },
+    {
+      "case": "E2",
+      "grid_n": 128,
+      "level": 7,
+      "pdf": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l7_partial_ready_stationary_ellipse_curvature_process_e2_l7_plate.pdf",
+      "png": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l7_partial_ready_stationary_ellipse_curvature_process_e2_l7_plate.png",
+      "source_data_csv": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e2_l7_partial_ready_stationary_ellipse_curvature_process_e2_l7_plate_source_data.csv",
+      "source_data_manifest": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/source_data/stationary_ellipse_process_plate_e2_l7_partial_ready_stationary_ellipse_curvature_process_e2_l7_plate_manifest.json",
+      "svg": "/Users/jcy/research/PINN/cfd_applications_cleanroom/results/figures/stationary_ellipse_process_plate_e2_l7_partial_ready_stationary_ellipse_curvature_process_e2_l7_plate.svg"
+    }
+  ],
+  "skipped": [
+    {
+      "case": "E1",
+      "grid_n": 256,
+      "level": 8,
+      "missing": [
+        "NN_DISABLE",
+        "NN_PROBE_ONLY",
+        "NN27_RAW",
+        "NN27_D4"
+      ]
+    },
+    {
+      "case": "E2",
+      "grid_n": 256,
+      "level": 8,
+      "missing": [
+        "NN_DISABLE",
+        "NN_PROBE_ONLY",
+        "NN27_RAW",
+        "NN27_D4"
+      ]
+    }
+  ]
+}
