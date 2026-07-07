@@ -100,6 +100,9 @@ def main() -> int:
                 artifact_prefix=artifact_prefix,
                 native_trace_csv_override=Path(native_summary["surface_tension_trace_csv"]),
                 trace_yscale="log",
+                curvature_ylim_quantiles=(0.01, 0.99),
+                curvature_ylim_scope="snapshot",
+                curvature_ytick_format="%.3f",
             )
             png = Path(figures["png"])
             ok = png.exists() and png.stat().st_size > 0

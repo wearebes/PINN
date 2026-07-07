@@ -833,6 +833,9 @@ def render_curvature_process_plate(
     artifact_prefix: str,
     native_trace_csv_override: Path | None = None,
     trace_yscale: str = "linear",
+    curvature_ylim_quantiles: tuple[float, float] | None = None,
+    curvature_ylim_scope: str = "global",
+    curvature_ytick_format: str | None = None,
 ) -> dict[str, str]:
     try:
         mpl_config_dir = ROOT / "cfd_applications_cleanroom/results/tmp/matplotlib"
@@ -894,11 +897,25 @@ def render_curvature_process_plate(
         2: "t/T = 2/3",
         3: "t/T = 1",
     }
-    y_values = [
-        float(row["hk_native"]) for row in expanded_rows if row["row_type"] == "curvature"
-    ] + [float(row["hk_nn"]) for row in expanded_rows if row["row_type"] == "curvature"]
-    y_pad = max((max(y_values) - min(y_values)) * 0.08, 1e-4) if y_values else 1e-4
-    y_lim = (min(y_values) - y_pad, max(y_values) + y_pad) if y_values else (-0.1, 0.1)
+    def _curvature_ylim(rows: list[dict[str, str]]) -> tuple[float, float]:
+        y_values = [float(row["hk_native"]) for row in rows] + [float(row["hk_nn"]) for row in rows]
+        if not y_values:
+            return (-0.1, 0.1)
+        if curvature_ylim_quantiles is not None:
+            sorted_y = sorted(y_values)
+            lo_q, hi_q = curvature_ylim_quantiles
+            lo_index = min(len(sorted_y) - 1, max(0, int(lo_q * (len(sorted_y) - 1))))
+            hi_index = min(len(sorted_y) - 1, max(0, int(hi_q * (len(sorted_y) - 1))))
+            y_min, y_max = sorted_y[lo_index], sorted_y[hi_index]
+        else:
+            y_min, y_max = min(y_values), max(y_values)
+        y_pad = max((y_max - y_min) * 0.08, 1e-4)
+        return (y_min - y_pad, y_max + y_pad)
+
+    curvature_rows = [row for row in expanded_rows if row["row_type"] == "curvature"]
+    y_lim = _curvature_ylim(curvature_rows)
+    if curvature_ylim_scope not in {"global", "snapshot"}:
+        raise StationaryGateError(f"invalid_curvature_ylim_scope:{curvature_ylim_scope}")
     for snapshot_index, ax in enumerate(axes):
         rows = [
             row for row in expanded_rows
@@ -911,8 +928,21 @@ def render_curvature_process_plate(
         ax.scatter(theta, native, s=4, color=colors["native"], alpha=0.45, linewidths=0, label="CLSVOF-LS")
         ax.scatter(theta, nn, s=4, color=colors["nn"], alpha=0.55, linewidths=0, label="NN")
         ax.set_xlim(0, 360)
-        ax.set_ylim(*y_lim)
+        ax.set_ylim(*(_curvature_ylim(rows) if curvature_ylim_scope == "snapshot" else y_lim))
         ax.set_xticks([0, 90, 180, 270, 360])
+        if curvature_ytick_format:
+            ax.yaxis.set_major_formatter(mpl.ticker.FormatStrFormatter(curvature_ytick_format))
+            if curvature_ytick_format == "%.3f":
+                y_lo, y_hi = ax.get_ylim()
+                tick_step = 0.005 if (y_hi - y_lo) > 0.01 else 0.001
+                tick_start = math.ceil(y_lo / tick_step) * tick_step
+                ticks = []
+                tick = tick_start
+                while tick <= y_hi + tick_step * 0.5:
+                    ticks.append(round(tick, 3))
+                    tick += tick_step
+                if ticks:
+                    ax.set_yticks(ticks)
         ax.set_title(labels[snapshot_index])
         if snapshot_index in (2, 3):
             ax.set_xlabel("degree")
@@ -934,17 +964,24 @@ def render_curvature_process_plate(
     def _final_value(values: list[float]) -> float:
         return values[-1] if values else math.nan
 
+    def _trace_label(method: str, tau_values: list[float], ca_values: list[float]) -> str:
+        value = _final_value(ca_values)
+        tau_value = _final_value(tau_values)
+        if math.isfinite(tau_value) and tau_value < 0.999:
+            return fr"{method} $Ca_{{max}}$={value:.2e}, $t/T$={tau_value:.2f}"
+        return fr"{method} $Ca_{{max}}$={value:.2e}"
+
     trace_rows = [row for row in expanded_rows if row["row_type"] == "surface_tension_trace"]
     tau = [float(row["tau"]) for row in trace_rows]
     ca = [float(row["Ca"]) for row in trace_rows]
-    trace_ax.plot(tau, ca, color="#0072b2", linewidth=1.1, label=fr"NN $Ca_{{max}}$={_final_value(ca):.2e}")
+    trace_ax.plot(tau, ca, color="#0072b2", linewidth=1.1, label=_trace_label("NN", tau, ca))
     clsvof_rows = [row for row in expanded_rows if row["row_type"] == "clsvof_ls_trace"]
     if clsvof_rows:
         clsvof_tau = [float(row["tau"]) for row in clsvof_rows]
         clsvof_ca = [float(row["Ca"]) for row in clsvof_rows]
         trace_ax.plot(
             clsvof_tau, clsvof_ca, color="#4c566a", linewidth=1.1,
-            label=fr"CLSVOF-LS $Ca_{{max}}$={_final_value(clsvof_ca):.2e}",
+            label=_trace_label("CLSVOF-LS", clsvof_tau, clsvof_ca),
         )
     for frac in (0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0):
         trace_ax.axvline(frac, color="#7f8c8d", linewidth=0.7, alpha=0.45)

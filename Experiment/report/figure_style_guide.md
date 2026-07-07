@@ -139,12 +139,12 @@
 
 - `stationarybuubble_64.png`：stationary curvature diagnostic（`stationary_curvature_process`，level 6 / grid_n 64）在 `t/T = 0, 1/3, 2/3, 1` 四个时刻的 angle-resolved `h*kappa`，以及同 run 的 `Ca_max` trace。文件名保留历史拼写。
 - `stationarybubble_128.png`：同一 `stationary_curvature_process` / `NN27_RAW` / `CLSVOF-LS` host 路径，level 7 / grid_n 128，完整跑到 `t/T = 1`。
-- `stationarybubble_256.png`：同一 `stationary_curvature_process` / `NN27_RAW` / `CLSVOF-LS` host 路径，level 8 / grid_n 256，完整跑到 `t/T = 1`。
+- `stationarybubble_256.png`：同一 `stationary_curvature_process` / `NN27_RAW` / `CLSVOF-LS` host 路径，level 8 / grid_n 256；NN trace 已完整到 `t/T = 1`，CLSVOF-LS r0 当前为 partial trace，图例必须标注 partial/current `Ca` 和当前 `t/T`，不能作为完整 CLSVOF-LS final baseline 引用。
 - `stationarybubble_64_process.png`：stationary bubble case（`stationary_curvature_process`，level 6 / grid_n 64）在 `t/T = 0, 1/3, 2/3, 1` 四个时刻的气泡几何状态，1x4 small multiples。
 
 这组图属于 CFD-injection（cfd_applications_cleanroom）实验族。
 
-`stationary_curvature_process_20260703T052139Z` 曾启动 level 8 / 9（grid_n 256 / 512）补跑，但本地 full-time solver 推进过慢，中断时 level 8 仅到 `t/T≈0.0101`，未生成 manifest summary / final figure。该 partial raw bundle 不进入 `Experiment/report`，也不能作为正式图引用。正式 N256 使用 `stationary_curvature_process_20260703T074754Z/NN27_RAW_L8` 的完整 summary。N512 正在单独以 level 9 full-time run 补跑，完整 summary 生成后再进入 report。
+当前 circle report 使用 `stationary_curvature_process_20260705T043136Z` 的 NN L6/L7/L8 完整 source，以及 `stationary_canary_20260705T214031Z` 的 CLSVOF-LS source（r0/r1/r2 均已归档）。N64/N128 的 CLSVOF-LS 已完整；N256 的 CLSVOF-LS 仍为 partial trace，完成状态与 repeat 证据记录在 `stationary bubble/stationary_bubble_source.csv.gz` 的 `row_type=index` 行和 `stationary_bubble_summary.md` 的指标表中（旧的 `summary_manifest.json` 已退役）。N512 NN L9 已按用户要求停止在 partial progress，不进入当前 report。
 
 ### 颜色
 
@@ -158,7 +158,8 @@
 - 每个 panel 画解析圆（R=0.4，由 `hk_native` 反推网格间距核验一致），无 marker、无散点，因为这四个时刻的真实界面轮廓数据（VOF/level-set facet dump）不存在——pipeline 只落盘了界面带探针点（网格单元中心，用于挑出 `|d|/Δ≤1` 那圈，并非真实界面）和标量 Ca trace。画探针点会被误读成"界面形状"，所以改为直接画解析几何。
 - 四个 panel 之间的圆理应看起来完全一样：这是诚实的结论（stationary bubble 的几何状态本来就不随时间变化），不要为了"看起来有信息量"而人为夸大或编造形变。
 - 若要展示这个 case 真正随时间变化的量（曲率重建误差、Ca_max 收敛过程），用 pipeline 自带的诊断图：`cfd_applications_cleanroom/results/figures/stationary_curvature_process_20260702T121230Z_stationary_curvature_process_plate.png`，不要混进这张状态图里。
-- `Ca_max` trace panel 的方法标签必须显式写出最终值，例如 `NN final Ca_max = 8.19e-06`，避免读者需要回查 raw summary 才知道收敛后的量级。
+- `Ca_max` trace panel 的方法标签直接写 `Ca_max=...`，不要在图例里加 `final`；partial trace 只追加当前 `t/T`，完成状态由 `stationary_bubble_source.csv.gz` / `stationary_ellipse_source.csv.gz` 的 `row_type=index` 行（`status` / `report_ready` 列）与对应 `*_summary.md` 记录（旧的 `summary_manifest.json` / `summary_index.csv` 已退役）。
+- stationary ellipse 的四个 angle-resolved `h*kappa` panel 使用逐 panel 的 1%-99% robust y-axis limits（再加 8% padding）和三位小数 y tick，避免 `t/T=0` 的大曲率跨度压扁后续时刻的预测点；circle 仍使用全量 min/max 轴限。
 
 ## 9. 可复现来源
 
