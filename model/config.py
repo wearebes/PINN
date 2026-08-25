@@ -32,7 +32,7 @@ class _BaseTrainConfig:
     profile_cuda_timing: bool = False
     input_dim: int = 9
     raw_feature_dim: int = 9
-    optimizer_type: OptimizerType = "adamw"
+    optimizer_type: OptimizerType = "adam"
     loss_fn: LossFnType = "mse"
     dataset_path: Path = field(default_factory=default_dataset_path)
     output_model_path: Path = field(default_factory=default_output_model_path)
