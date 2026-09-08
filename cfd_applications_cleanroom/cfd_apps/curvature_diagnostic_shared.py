@@ -52,28 +52,14 @@ NN_DIR = ROOT / "cfd_applications_cleanroom/nn"
 NN_EXPORT_MANIFEST = NN_DIR / "generated/export_manifest.json"
 NN_FORWARD_SOURCE = NN_DIR / "nn_forward_clean.c"
 NN_MODE_VALUES = {
-    "NN_DISABLE": 0,
-    "NN_PROBE_ONLY": 1,
     "NN27_RAW": 2,
-    "NN27_D4": 3,
-    "NN27_RAW_RELAX": 4,
-    "NN27_D4_RELAX": 5,
 }
 NN_LABELS = {
-    "NN_DISABLE": "nn27_r128",
-    "NN_PROBE_ONLY": "nn27_r128",
     "NN27_RAW": "nn27_r128",
-    "NN27_D4": "nn27_r128",
-    "NN27_RAW_RELAX": "nn27_r128",
-    "NN27_D4_RELAX": "nn27_r128",
 }
 METHOD_DISPLAY_LABELS = {
     "NN27_RAW": "NN",
-    "NN27_D4": "NND4",
-    "NN27_RAW_RELAX": "NN+LR",
-    "NN27_D4_RELAX": "NND4+LR",
 }
-RELAX_METHODS = frozenset({"NN27_RAW_RELAX", "NN27_D4_RELAX"})
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
@@ -675,10 +661,6 @@ def raw_prefilter_stats(records: list[dict[str, str]]) -> dict[str, Any]:
         "mean_delta_hk_raw": mean_(delta_raw),
         "p95_abs_delta_hk_raw": percentile(abs_raw, 0.95),
         "max_abs_delta_hk_raw": max(abs_raw),
-        "relax_lambda": float(records[0]["relax_lambda"]),
-        "mean_relax_neighbor_count": mean_(
-            [float(row["relax_neighbor_count"]) for row in records]
-        ),
     }
 
 
@@ -965,11 +947,17 @@ def render_curvature_process_plate(
         return values[-1] if values else math.nan
 
     def _trace_label(method: str, tau_values: list[float], ca_values: list[float]) -> str:
-        value = _final_value(ca_values)
+        # final = LAST plotted value (Ca_final semantics, or "last recorded"
+        # for an incomplete trace); max = true peak of the plotted curve.
+        # Legend used to print the final value mislabeled "Ca_max" until
+        # 2026-07-08, which contradicted the archive's own Ca_max column.
+        final_value = _final_value(ca_values)
+        max_value = max(ca_values) if ca_values else math.nan
         tau_value = _final_value(tau_values)
         if math.isfinite(tau_value) and tau_value < 0.999:
-            return fr"{method} $Ca_{{max}}$={value:.2e}, $t/T$={tau_value:.2f}"
-        return fr"{method} $Ca_{{max}}$={value:.2e}"
+            return (fr"{method} $Ca$={final_value:.2e} at $t/T$={tau_value:.2f} (incomplete), "
+                    fr"$Ca_{{max}}$={max_value:.2e}")
+        return fr"{method} $Ca_{{final}}$={final_value:.2e}, $Ca_{{max}}$={max_value:.2e}"
 
     trace_rows = [row for row in expanded_rows if row["row_type"] == "surface_tension_trace"]
     tau = [float(row["tau"]) for row in trace_rows]
@@ -986,7 +974,7 @@ def render_curvature_process_plate(
     for frac in (0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0):
         trace_ax.axvline(frac, color="#7f8c8d", linewidth=0.7, alpha=0.45)
     trace_ax.set_xlabel("t/T")
-    trace_ax.set_ylabel(r"$Ca_{max}$")
+    trace_ax.set_ylabel(r"$Ca$")
     trace_ax.set_xlim(0, max(1.0, max(tau) if tau else 1.0))
     if trace_yscale != "linear":
         # Ellipse traces span a real relaxation transient (~1e-3) down to a
@@ -1241,10 +1229,6 @@ def tail_mean(values: list[float], fraction: float) -> float:
 
 
 def _method_role(method: str) -> str:
-    if method == "NN27_D4":
-        return "baseline_hgradient_d4_branch"
-    if method in RELAX_METHODS:
-        return "experimental_relax_branch"
     return "raw_reference_branch"
 
 
@@ -1263,40 +1247,17 @@ def write_curvature_diagnostic_report(
     benchmark: str,
 ) -> dict[str, Any]:
     methods_by_name = {summary["method"]: summary for summary in summaries}
-    comparison: dict[str, Any] = {}
-    d4_method = "NN27_D4" if "NN27_D4" in methods_by_name else ""
-    if "NN27_RAW" in methods_by_name and d4_method:
-        raw_force = methods_by_name["NN27_RAW"]["force_band"]
-        d4_force = methods_by_name[d4_method]["force_band"]
-        comparison = {
-            f"{d4_method}_vs_NN27_RAW": {
-                "force_band_std_kappa_nn_ratio": _safe_ratio(
-                    d4_force["force_band_std_kappa_nn"],
-                    raw_force["force_band_std_kappa_nn"],
-                ),
-                "max_abs_delta_hk_ratio": _safe_ratio(
-                    d4_force["max_abs_delta_hk"],
-                    raw_force["max_abs_delta_hk"],
-                ),
-                "tail_mean_abs_delta_hk_ratio": _safe_ratio(
-                    d4_force["tail_mean_abs_delta_hk"],
-                    raw_force["tail_mean_abs_delta_hk"],
-                ),
-                "interpretation": "baseline_hgradient_d4_vs_raw",
-            }
-        }
     report = {
         "run_id": run_id,
         "benchmark": benchmark,
         "tier": "curvature-diagnostic",
         "levels": levels,
         "methods": methods_by_name,
-        "comparison": comparison,
+        "comparison": {},
         "manifest": route_relative(manifest_path),
         "overall_status": "PASS",
         "evidence_level": "controlled_diagnostic",
         "primary_branch": "NN27_RAW",
-        "d4_branch": d4_method,
         "paper_model_line": "baseline_hgradient",
     }
     report_path = REPORTS / f"{run_id}_curvature_field_summary.json"
@@ -1314,7 +1275,6 @@ def render_curvature_diagnostic_report(report: dict[str, Any]) -> str:
         f"- run_id: `{report['run_id']}`",
         f"- evidence_level: `{report['evidence_level']}`",
         f"- primary_branch: `{report['primary_branch']}`",
-        f"- d4_branch: `{report.get('d4_branch', '')}`",
         f"- paper_model_line: `{report.get('paper_model_line', '')}`",
         "",
         "| method | rows | mean Δ(hκ) | stdΓ κ_NN | max |Δ(hκ)| | p95 |Δ(hκ)| | sign | scale max |",

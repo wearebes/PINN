@@ -1,0 +1,6 @@
+level,arm,smooth_relax,radial,Ca_tail_max,R_vs_native,SB_G6_pass,fresh_today,binary_sha256,source
+6,CLSVOF_NATIVE,no,no,2.500408e-05,1.0000,yes,no,,"tem/nn_radial_smoke/README.md (native floor, prior run)"
+6,NN27_RAW,no,no,3.329100e-05,1.3314,no,no,,"tem/nn_radial_smoke/README.md (canary 20260704T123245Z, prior run)"
+6,NN27_RAW_RELAX,yes,no,3.291215e-05,1.3163,no,yes,4f41107b23183f0bcdfaadd39f4a6dc2a2f3bd57753f10ca7c3e7f34f42ff83c,tem/stationary_relax_only_smoke/run/stationary_trace.csv (fresh run today)
+6,NN27_RAW_RADIAL,no,yes,2.622877e-05,1.0490,yes,no,,tem/nn_radial_smoke/run_nn_radial (prior run)
+6,NN27_RAW_RADIAL_RELAX,yes,yes,2.609371e-05,1.0436,yes,no,,tem/nn_radial_smoke/run_nn_radial_relax (prior run)

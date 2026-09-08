@@ -8,32 +8,6 @@ methods:
   CLSVOF_LS_NATIVE:
     deployable: true
     force_path: Basilisk CLSVOF level-set distance_curvature
-  NN_DISABLE:
-    deployable: false
-    force_path: native force path with NN linked but disabled
-  NN_PROBE_ONLY:
-    deployable: false
-    force_path: native force path plus separated probe storage
   NN27_RAW:
     deployable: true
     force_path: raw baseline_hgradient checkpoint curvature
-  NN27_D4:
-    deployable: true
-    force_path: D4-averaged baseline_hgradient checkpoint curvature
-  NN27_RAW_RELAX:
-    deployable: false
-    experimental: true
-    force_path: raw baseline_hgradient checkpoint curvature followed by one-step 4-neighbor local relaxation in h*kappa space (experimental, not paper-facing)
-  NN27_D4_RELAX:
-    deployable: false
-    experimental: true
-    force_path: D4-averaged baseline_hgradient checkpoint curvature followed by one-step 4-neighbor local relaxation in h*kappa space (experimental, not paper-facing)
-  HK_BIAS_PROBE:
-    deployable: false
-    force_path: diagnostic CSV only
-  ORACLE_NATIVE_MIMIC:
-    deployable: false
-    force_path: diagnostic native-labeled pointwise selector
-  ORACLE_DYNAMIC_BEST:
-    deployable: false
-    force_path: diagnostic hindsight trajectory selector

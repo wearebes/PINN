@@ -90,24 +90,15 @@ NUMERIC_COLUMNS = {
 BANDS = {"force_band": 2.0, "interface_band": 1.0}
 SIGNALS = ("hk_native", "hk_nn", "delta_hk")
 STATS = ("mean", "rms", "p95", "p99", "max", "total_variation")
-PAPER_DEFAULT_METHODS = ("NN27_RAW", "NN27_D4")
+PAPER_DEFAULT_METHODS = ("NN27_RAW",)
 DISPLAY_LABELS = {
     "NN27_RAW": "NN",
-    "NN27_D4": "NND4",
-    "NN27_RAW_RELAX": "NN+LR",
-    "NN27_D4_RELAX": "NND4+LR",
 }
 MODEL_LINES = {
     "NN27_RAW": "baseline_hgradient",
-    "NN27_D4": "baseline_hgradient",
-    "NN27_RAW_RELAX": "baseline_hgradient + one-step local relaxation",
-    "NN27_D4_RELAX": "baseline_hgradient D4 consensus + one-step local relaxation",
 }
 METHOD_DEFINITIONS = {
     "NN27_RAW": "baseline_hgradient single prediction",
-    "NN27_D4": "baseline_hgradient D4 consensus: average of 8 transformed predictions",
-    "NN27_RAW_RELAX": "baseline_hgradient single prediction followed by one-step 4-neighbor local relaxation in h*kappa space",
-    "NN27_D4_RELAX": "baseline_hgradient D4 consensus followed by one-step 4-neighbor local relaxation in h*kappa space",
 }
 ALL_GATE_IDS = (
     "JG-D1",
@@ -885,9 +876,6 @@ def _render_plate(
     colors = {
         "CLSVOF-LS": "#5f6368",
         "NN": "#2b6ea6",
-        "NND4": "#1b9e77",
-        "NN+LR": "#d55e00",
-        "NND4+LR": "#7b3294",
     }
 
     for series in _comparison_series(methods):
@@ -921,7 +909,7 @@ def _render_plate(
     ax_tail.text(0.58, 0.86, "p95", ha="right", va="center", fontsize=6.5, fontweight="bold")
     ax_tail.text(0.78, 0.86, "p99", ha="right", va="center", fontsize=6.5, fontweight="bold")
     ax_tail.text(0.96, 0.86, "max", ha="right", va="center", fontsize=6.5, fontweight="bold")
-    row_y = {"CLSVOF-LS": 0.76, "NN": 0.60, "NN+LR": 0.44, "NND4": 0.28, "NND4+LR": 0.12}
+    row_y = {"CLSVOF-LS": 0.76, "NN": 0.60}
     for series in _comparison_series(methods):
         label = series["method_label"]
         rows = {
@@ -938,7 +926,6 @@ def _render_plate(
         for x, statistic in ((0.58, "p95"), (0.78, "p99"), (0.96, "max")):
             value = rows.get(statistic, {}).get("value", "")
             ax_tail.text(x, y, _panel_fmt(value), ha="right", va="center", fontsize=6.5)
-    ax_tail.text(0.03, 0.05, "NND4: D4 = 8-transform avg", ha="left", va="center", fontsize=6.0, color="#444444")
     ax_tail.set_xlim(0.0, 1.0)
     ax_tail.set_ylim(0.0, 1.0)
 
@@ -1067,10 +1054,10 @@ def _write_manifest(
         "plotted_source_data_csv": route_relative(paths["plotted_source_data_csv"]),
         "plotted_source_data_sha256": sha256_file(paths["plotted_source_data_csv"]),
         "figure_contract": {
-            "core_conclusion": "Under the same CLSVOF-LS host, NN and NND4 correction jumps should be judged by grid-neighbor tail distributions, with NND4 not enlarging the local jump tail relative to NN.",
-            "panel_a": "Grid-neighbor ECDF compares same-host CLSVOF-LS native h*kappa jumps against NN and NND4 correction jumps.",
+            "core_conclusion": "Under the same CLSVOF-LS host, NN correction jumps should be judged by grid-neighbor tail distributions.",
+            "panel_a": "Grid-neighbor ECDF compares same-host CLSVOF-LS native h*kappa jumps against NN correction jumps.",
             "panel_b": "p95, p99, and max tail values for the grid-neighbor evidence; no mean statistic is used in the visible figure.",
-            "panel_c": "Binned p95 angle profile for NN and NND4 correction jumps after deterministic quadrant-symmetry expansion.",
+            "panel_c": "Binned p95 angle profile for NN correction jumps after deterministic quadrant-symmetry expansion.",
         },
         "summary_json": route_relative(paths["summary_json"]),
         "summary_md": route_relative(paths["summary_md"]),
@@ -1144,7 +1131,6 @@ def _write_markdown(path: Path, report: dict[str, Any]) -> None:
         "It does not replace same-host stationary-bubble Ca evidence.",
         "VOF-HF remains a positive-control reference, not the research target replacement.",
         "Angle-domain note: the source CSV is measured on the quadrant host (0-90 degrees). The figure uses quadrant symmetry expansion to display 0-360 degrees; it is not an independent full-domain export.",
-        "D4 note: `NND4` is the baseline_hgradient D4 consensus, i.e. the average of 8 transformed NN predictions.",
         "Publication figure note: the visible plate is a three-panel tail-evidence figure: grid-neighbor ECDF, p95/p99/max table, and binned angular p95 profile.",
         "",
         "## Gate Table",
@@ -1205,8 +1191,6 @@ def _display_label(method: str) -> str:
 
 
 def _short_display_label(method: str) -> str:
-    if method == "NN27_D4":
-        return "NND4"
     return _display_label(method)
 
 

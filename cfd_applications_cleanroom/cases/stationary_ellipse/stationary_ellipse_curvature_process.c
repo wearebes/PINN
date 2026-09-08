@@ -6,16 +6,9 @@ genuinely new host capability this diagnostic family needs (see
 docs/superpowers/plans/2026-07-03-stationary-ellipse-curvature-stress-diagnostic.md
 Phase 6):
 
-  - the 4-way NN_MODE force-path switch from stationary_clsvof_nn.c
-    (NN_DISABLE / NN_PROBE_ONLY route force through native integral.h;
-    NN27_RAW / NN27_D4 route force through generated/integral_nn_clean.h)
+  - the NN27_RAW force path through generated/integral_nn_clean.h
   - the per-cell snapshot + Ca(t)/mass(t)/dc(t) trace writer from
     stationary_curvature_process.c
-
-so that force-coupling can be isolated from NN-value error (Phase 9
-attribution matrix): NN_DISABLE is the fully-native baseline, NN_PROBE_ONLY
-computes the same NN value as NN27_RAW/NN27_D4 but never uses it in the
-force, and NN27_RAW/NN27_D4 actually drive the force with it.
 
 This is a diagnostic host, not the stationary-bubble equilibrium benchmark:
 an ellipse is not a surface-tension equilibrium shape, so Ca(t) here answers
@@ -35,13 +28,10 @@ bubble held stationary".
 #include <math.h>
 #include <stdlib.h>
 
-#define NN_DISABLE_MODE 0
-#define NN_PROBE_ONLY_MODE 1
 #define NN27_RAW_MODE 2
-#define NN27_D4_MODE 3
 
 #ifndef NN_MODE
-# define NN_MODE NN_DISABLE_MODE
+# define NN_MODE NN27_RAW_MODE
 #endif
 #ifndef NN_WEIGHTS_HEADER
 # define NN_WEIGHTS_HEADER "generated/nn_weights_nn27_r128_clean.h"
@@ -58,8 +48,10 @@ bubble held stationary".
 #endif
 #include "ellipse_geometry_clean.h"
 
-#if NN_MODE == NN27_RAW_MODE || NN_MODE == NN27_D4_MODE
+#if NN_MODE == NN27_RAW_MODE
 # define CLEANROOM_USE_NN_FORCE_CURVATURE 1
+#else
+# error "stationary_ellipse_curvature_process.c only supports NN_MODE=NN27_RAW_MODE"
 #endif
 
 scalar fn[];
@@ -78,11 +70,7 @@ static inline void cleanroom_build_raw_from_d (Point point, scalar field, double
 }
 
 static inline double cleanroom_method_hkappa (const double raw[27]) {
-#if NN_MODE == NN27_D4_MODE
-  return nn_hkappa_d4_clean (raw);
-#else
   return mlp_hkappa_clean (raw);
-#endif
 }
 
 #if CLEANROOM_USE_NN_FORCE_CURVATURE
@@ -116,15 +104,7 @@ static inline double cleanroom_nn_force_curvature (Point point, scalar field) {
 # define CASE_ID "stationary_ellipse_curvature_process"
 #endif
 #ifndef METHOD_ID
-# if NN_MODE == NN27_RAW_MODE
-#  define METHOD_ID "NN27_RAW"
-# elif NN_MODE == NN27_D4_MODE
-#  define METHOD_ID "NN27_D4"
-# elif NN_MODE == NN_PROBE_ONLY_MODE
-#  define METHOD_ID "NN_PROBE_ONLY"
-# else
-#  define METHOD_ID "NN_DISABLE"
-# endif
+# define METHOD_ID "NN27_RAW"
 #endif
 
 /* Ellipse has no single "diameter"; MU/TMAX use the area-equivalent

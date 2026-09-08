@@ -20,11 +20,6 @@ curvature values on the force/interface band.
 #include <stdlib.h>
 
 #define NN27_RAW_MODE 2
-#define NN27_D4_MODE 3
-#define NN27_RAW_RELAX_MODE 4
-#define NN27_D4_RELAX_MODE 5
-#define CLEANROOM_RELAX_ENABLED \
-  (NN_MODE == NN27_RAW_RELAX_MODE || NN_MODE == NN27_D4_RELAX_MODE)
 
 #ifndef NN_MODE
 # define NN_MODE NN27_RAW_MODE
@@ -43,15 +38,7 @@ curvature values on the force/interface band.
 # define CASE_ID "stationary_curvature_field"
 #endif
 #ifndef METHOD_ID
-# if NN_MODE == NN27_D4_MODE
-#  define METHOD_ID "NN27_D4"
-# elif NN_MODE == NN27_RAW_RELAX_MODE
-#  define METHOD_ID "NN27_RAW_RELAX"
-# elif NN_MODE == NN27_D4_RELAX_MODE
-#  define METHOD_ID "NN27_D4_RELAX"
-# else
-#  define METHOD_ID "NN27_RAW"
-# endif
+# define METHOD_ID "NN27_RAW"
 #endif
 
 #define DIAMETER 0.8
@@ -75,14 +62,8 @@ static inline void cleanroom_build_raw_from_d (Point point, scalar field, double
 }
 
 static inline double cleanroom_method_hkappa (const double raw[27]) {
-#if NN_MODE == NN27_D4_MODE || NN_MODE == NN27_D4_RELAX_MODE
-  return nn_hkappa_d4_clean (raw);
-#else
   return mlp_hkappa_clean (raw);
-#endif
 }
-
-#include "stationary_relax_filter.h"
 
 int main() {
   DT = HUGE [0];
@@ -108,25 +89,17 @@ event curvature_export (i = 0) {
       "run_id,benchmark,case_id,method,level,grid_n,x,y,theta,d,abs_d_over_delta,"
       "hk_native,hk_nn,delta_hk,native_kappa,kappa_nn,delta_kappa,"
       "kappa_nn_from_hk_over_delta,scale_identity_error,sign_product,"
-      "hk_nn_raw,hk_nn_force,delta_hk_raw,delta_hk_force,relax_lambda,relax_neighbor_count\n");
+      "hk_nn_raw,hk_nn_force,delta_hk_raw,delta_hk_force\n");
   }
   const char * run_id = cleanroom_env ("CLEANROOM_RUN_ID", "unset-run-id");
-  scalar hk_raw_tmp[];
-  CLEANROOM_FILL_HK_RAW_BAND (d, hk_raw_tmp);
   foreach()
     if (fabs(d[]) <= 2.*Delta) {
       double native_kappa = distance_curvature (point, d);
       double hk_native = Delta*native_kappa;
-      double hk_nn_raw = hk_raw_tmp[];
+      double raw[27];
+      cleanroom_build_raw_from_d (point, d, raw);
+      double hk_nn_raw = cleanroom_method_hkappa (raw);
       double hk_nn_force = hk_nn_raw;
-      int relax_neighbor_count = 0;
-      double relax_lambda = 0.;
-#if CLEANROOM_RELAX_ENABLED
-      CleanroomHkappaSample sample = cleanroom_relax_sample (point, d, hk_raw_tmp);
-      hk_nn_force = sample.hk_force;
-      relax_neighbor_count = sample.relax_neighbor_count;
-      relax_lambda = CLEANROOM_RELAX_LAMBDA;
-#endif
       double hk_nn = hk_nn_force;
       double kappa_nn = hk_nn/Delta;
       double delta_hk = hk_nn - hk_native;
@@ -141,12 +114,11 @@ event curvature_export (i = 0) {
         fprintf (fp,
           "%s,stationary,%s,%s,%d,%d,%.17g,%.17g,%.17g,%.17g,%.17g,"
           "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,"
-          "%.17g,%.17g,%.17g,%.17g,%.17g,%d\n",
+          "%.17g,%.17g,%.17g,%.17g\n",
           run_id, CASE_ID, METHOD_ID, LEVEL, N, x, y, theta, d[], fabs(d[])/Delta,
           hk_native, hk_nn, delta_hk, native_kappa, kappa_nn, delta_kappa,
           kappa_nn_from_hk_over_delta, scale_identity_error, sign_product,
-          hk_nn_raw, hk_nn_force, delta_hk_raw, delta_hk_force, relax_lambda,
-          relax_neighbor_count);
+          hk_nn_raw, hk_nn_force, delta_hk_raw, delta_hk_force);
     }
   if (fp)
     fclose (fp);

@@ -27,7 +27,7 @@ V3    (PCA-18)           out/5527/v3_{ρ}_hgradient.pt           # "PCA"
 ```bash
 # 1. Generate training data    (实际布局: dataset/{ρ}/{ρ}_*.h5)
 python -m train_generate --output dataset/256/256_h.h5         --resolutions 256 --scale-h                       # V2  9D
-python -m train_generate --output dataset/256/256_hgradient.h5 --resolutions 256 --scale-h --augment-gradient    # V2.1 27D
+python -m train_generate --output dataset/16/16_hgradient.h5 --resolutions 16 --scale-h --augment-gradient    # V2.1 27D
 
 python -m train_generate --output dataset/256/256_ah.h5           --resolutions 256 --augment-alpha 0.5,1.0,2.0                     # V2.2 9D
 python -m train_generate --output dataset/256/256_hgradient_ah.h5 --resolutions 256 --augment-alpha 0.5,1.0,2.0 --augment-gradient   # V2.3 27D
@@ -35,9 +35,9 @@ python -m train_generate --output dataset/256/256_hgradient_ah.h5 --resolutions 
 
 # 2. Train (baseline / V2.x)
 python -m model.train \
-  --dataset-output dataset/256/256_hgradient.h5 \
-  --output-model out/256/baseline_256_hgradient.pt \
-  --normalization-csv out/256/baseline_256_hgradient.csv
+  --dataset-output dataset/32/32_hgradient.h5 \
+  --output-model out/32/baseline_32_hgradient.pt \
+  --normalization-csv out/32/baseline_32_hgradient.csv
 
 # 2b. Train with PCA-18 (V3, MLP only)
 # 源必须是 V2.1 的 27D 数据集（--augment-gradient 生成的 *_hgradient.h5）。

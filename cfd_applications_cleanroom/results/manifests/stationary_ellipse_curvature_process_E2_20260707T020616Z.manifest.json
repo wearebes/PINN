@@ -1,0 +1,41 @@
+{
+  "benchmark": "stationary_ellipse",
+  "case": "E2",
+  "rows": [
+    {
+      "benchmark": "stationary_ellipse",
+      "binary": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/stationary_ellipse_curvature_process_e2_nn_disable_L8",
+      "binary_sha256": "175fdb2c751750a0c248aed9f4813ec87d7d8916404d61e547d89bf6d90f31c5",
+      "case_source_path": "cfd_applications_cleanroom/cases/stationary_ellipse/stationary_ellipse_curvature_process.c",
+      "case_source_sha256": "37af352b092c21ad1cba8409178ee93c1817db7f0cf3a6984f0a388ebd92c368",
+      "checkpoint_path": "out/128/baseline_128_hgradient.pt",
+      "checkpoint_sha256": "23f61820f836b647cc38b9c215937b5db925da3df9b3df124f142068ad105bd2",
+      "compile_command": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/build/basilisk_arm64/src/qcc -Wdimensions -DELLIPSE_A=0.4898979 -DELLIPSE_B=0.3265986 -fopenmp -autolink -O2 -DLEVEL=8 -DNN_MODE=0 -DMETHOD_ID=\\\"NN_DISABLE\\\" -I/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/nn stationary_ellipse_curvature_process.c /mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/nn_forward_clean.o /mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/geometry/L8/ellipse_geometry_clean.o -o /mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/stationary_ellipse_curvature_process_e2_nn_disable_L8 -lm",
+      "compile_log": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/compile.log",
+      "curvature_process_csv": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/curvature_process.csv",
+      "evidence_level": "controlled_diagnostic",
+      "grid_n": "256",
+      "level": "8",
+      "method": "NN_DISABLE",
+      "nn_weights_header_sha256": "560dd3aa8171a83344718dbfa335f9d2bc615e61fe1710681da4ba1b14b34378",
+      "official_source_manifest_sha256": "7e285d4f1c1cbb6719a0a930dbf67149d3cb8d1309de31f91623df8aa936fee6",
+      "official_source_root": "cfd_applications_cleanroom/vendor/basilisk_clean/src",
+      "raw_csv": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/surface_tension_trace.csv",
+      "repeat_id": "0",
+      "resolved_config_json": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/config.resolved.json",
+      "resolved_config_sha256": "ba10d21c392f21df35c14eaee3f9b56c7f3ba808ee3232ddcb39874a6449a21b",
+      "result_status": "curvature_process_diagnostic",
+      "run_command": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/stationary_ellipse_curvature_process_e2_nn_disable_L8",
+      "run_id": "stationary_ellipse_curvature_process_E2_20260707T020616Z",
+      "source_hashes_compile_json": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/build/NN_DISABLE/L8/source_hashes_compile.json",
+      "source_hashes_json": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/source_hashes.json",
+      "status_file": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/status.json",
+      "stderr_log": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/stderr.log",
+      "stdout_log": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/stdout.log",
+      "summary_json": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/summary.json",
+      "surface_tension_trace_csv": "/mnt/e/Research/PDE/MLP-field/PINN/cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T020616Z/NN_DISABLE_L8/surface_tension_trace.csv"
+    }
+  ],
+  "run_id": "stationary_ellipse_curvature_process_E2_20260707T020616Z",
+  "tier": "curvature-process"
+}

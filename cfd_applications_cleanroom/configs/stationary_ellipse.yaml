@@ -14,11 +14,11 @@
     "diameter_equiv_formula": "2*sqrt(a*b)"
   },
   "curvature_diagnostic": {
-    "methods": ["NN27_RAW", "NN27_D4"],
+    "methods": ["NN27_RAW"],
     "levels": [6, 7, 8]
   },
   "curvature_process": {
-    "methods": ["NN_DISABLE", "NN_PROBE_ONLY", "NN27_RAW", "NN27_D4"],
+    "methods": ["NN27_RAW"],
     "levels": [6, 7, 8]
   },
   "evidence_level_ceiling": "controlled_diagnostic",

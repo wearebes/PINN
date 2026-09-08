@@ -1,0 +1,6 @@
+level,arm,smooth_relax,radial,circ_min,closure_pct,vc_max,yc_end,vol_rel_max,row_count,binary_sha256,source_trace_csv
+6,CLSVOF_NATIVE,no,no,0.880831,,0.239763,1.076281,2.308e-04,217,79545c25e0c2b417cc20230b8b8a71446d52c047c1e71351104022a428670518,tem/nn_radial_dynamic_smoke/rising/native/rising_NN_DISABLE_L6.csv
+6,NN27_RAW,no,no,0.872083,0.00,0.239738,1.076017,2.756e-04,217,07fb47fc7bca4f8b31a039251149e4eea5c3dd0b807a03c5dee603ab45f8e89d,tem/nn_radial_dynamic_smoke/rising/nn_raw/rising_NN_RAW_L6.csv
+6,NN27_RAW_RELAX,yes,no,0.872058,-0.29,0.239741,1.076001,2.819e-04,217,ce0c276260411c82bfd68d9368bb05e9b1a29b893edfdf285dff7e17e8c533cb,tem/nn_radial_dynamic_smoke/rising/relax_only/rising_NN_RAW_L6.csv
+6,NN27_RAW_RADIAL,no,yes,0.880977,101.66,0.239763,1.076264,2.581e-04,217,4b4dc7614fc7f84f4495e1c0aca0e8f922b14836104c05bf95254bf141d331d4,tem/nn_radial_dynamic_smoke/rising/radial/rising_NN_RAW_L6.csv
+6,NN27_RAW_RADIAL_RELAX,yes,yes,0.881269,105.01,0.239766,1.076258,2.556e-04,217,548cb5f8fa4f95ada8caf49e4a3b0ae886e0884e4609a7dd43bc09915079dea4,tem/nn_radial_dynamic_smoke/rising/radial_relax/rising_NN_RAW_L6.csv

@@ -19,11 +19,6 @@ NN-predicted curvature at fixed fractions of the total stationary-bubble time.
 #include <stdlib.h>
 
 #define NN27_RAW_MODE 2
-#define NN27_D4_MODE 3
-#define NN27_RAW_RELAX_MODE 4
-#define NN27_D4_RELAX_MODE 5
-#define CLEANROOM_RELAX_ENABLED \
-  (NN_MODE == NN27_RAW_RELAX_MODE || NN_MODE == NN27_D4_RELAX_MODE)
 
 #ifndef NN_MODE
 # define NN_MODE NN27_RAW_MODE
@@ -53,14 +48,8 @@ static inline void cleanroom_build_raw_from_d (Point point, scalar field, double
 }
 
 static inline double cleanroom_method_hkappa (const double raw[27]) {
-#if NN_MODE == NN27_D4_MODE || NN_MODE == NN27_D4_RELAX_MODE
-  return nn_hkappa_d4_clean (raw);
-#else
   return mlp_hkappa_clean (raw);
-#endif
 }
-
-#include "stationary_relax_filter.h"
 
 static inline double cleanroom_nn_force_curvature (Point point, scalar field) {
   double raw[27];
@@ -69,20 +58,6 @@ static inline double cleanroom_nn_force_curvature (Point point, scalar field) {
   return hk/Delta;
 }
 
-#if CLEANROOM_RELAX_ENABLED
-#define CLEANROOM_PREFILL_FORCE_KAPPA(field) do { \
-  scalar hk_raw_tmp[]; \
-  CLEANROOM_FILL_HK_RAW_BAND (field, hk_raw_tmp); \
-  foreach() { \
-    if (fabs(field[]) <= 2.*Delta) { \
-      CleanroomHkappaSample sample = cleanroom_relax_sample (point, field, hk_raw_tmp); \
-      kappa_nn[] = sample.hk_force/Delta; \
-    } \
-    else \
-      kappa_nn[] = distance_curvature (point, field); \
-  } \
-} while (0)
-#else
 #define CLEANROOM_PREFILL_FORCE_KAPPA(field) do { \
   foreach() \
     if (fabs(field[]) <= 2.*Delta) \
@@ -90,7 +65,6 @@ static inline double cleanroom_nn_force_curvature (Point point, scalar field) {
     else \
       kappa_nn[] = distance_curvature (point, field); \
 } while (0)
-#endif
 #define CLEANROOM_FORCE_KAPPA_VALUE kappa_nn[]
 #include "generated/integral_nn_clean.h"
 
@@ -104,15 +78,7 @@ static inline double cleanroom_nn_force_curvature (Point point, scalar field) {
 # define CASE_ID "stationary_curvature_process"
 #endif
 #ifndef METHOD_ID
-# if NN_MODE == NN27_D4_MODE
-#  define METHOD_ID "NN27_D4"
-# elif NN_MODE == NN27_RAW_RELAX_MODE
-#  define METHOD_ID "NN27_RAW_RELAX"
-# elif NN_MODE == NN27_D4_RELAX_MODE
-#  define METHOD_ID "NN27_D4_RELAX"
-# else
-#  define METHOD_ID "NN27_RAW"
-# endif
+# define METHOD_ID "NN27_RAW"
 #endif
 
 #define DIAMETER 0.8
@@ -165,22 +131,14 @@ static void cleanroom_write_snapshot (int iter, int snapshot_index, double snaps
   double tau = MU*t/sq(DIAMETER);
   double umax = cleanroom_umax();
   double Ca = MU*umax/SIGMA;
-  scalar hk_raw_tmp[];
-  CLEANROOM_FILL_HK_RAW_BAND (d, hk_raw_tmp);
   foreach()
     if (fabs(d[]) <= 2.*Delta) {
       double native_kappa = distance_curvature (point, d);
       double hk_native = Delta*native_kappa;
-      double hk_nn_raw = hk_raw_tmp[];
+      double raw[27];
+      cleanroom_build_raw_from_d (point, d, raw);
+      double hk_nn_raw = cleanroom_method_hkappa (raw);
       double hk_nn_force = hk_nn_raw;
-      int relax_neighbor_count = 0;
-      double relax_lambda = 0.;
-#if CLEANROOM_RELAX_ENABLED
-      CleanroomHkappaSample sample = cleanroom_relax_sample (point, d, hk_raw_tmp);
-      hk_nn_force = sample.hk_force;
-      relax_neighbor_count = sample.relax_neighbor_count;
-      relax_lambda = CLEANROOM_RELAX_LAMBDA;
-#endif
       double hk_nn = hk_nn_force;
       double kappa_model = hk_nn/Delta;
       double delta_hk_raw = hk_nn_raw - hk_native;
@@ -196,12 +154,12 @@ static void cleanroom_write_snapshot (int iter, int snapshot_index, double snaps
         fprintf (fp_field,
           "%s,stationary,%s,%s,%d,%d,%d,%.17g,%d,%.17g,%.17g,%.17g,%.17g,"
           "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,"
-          "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%d\n",
+          "%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n",
           run_id, CASE_ID, METHOD_ID, LEVEL, N, iter, t, snapshot_index, snapshot_fraction, tau, SIGMA,
           x, y, theta_deg, d[], fabs(d[])/Delta, hk_native, hk_nn, hk_nn - hk_native,
           native_kappa, kappa_model, kappa_model - native_kappa, kappa_nn_from_hk_over_delta,
           scale_identity_error, sign_product, Ca, hk_nn_raw, hk_nn_force, delta_hk_raw,
-          delta_hk_force, relax_lambda, relax_neighbor_count);
+          delta_hk_force);
     }
 }
 
@@ -224,8 +182,7 @@ event init (t = 0) {
       "run_id,benchmark,case_id,method,level,grid_n,i,t,snapshot_index,snapshot_fraction,tau,"
       "sigma,x,y,theta_deg,d,abs_d_over_delta,hk_native,hk_nn,delta_hk,"
       "native_kappa,kappa_nn,delta_kappa,kappa_nn_from_hk_over_delta,scale_identity_error,"
-      "sign_product,Ca,hk_nn_raw,hk_nn_force,delta_hk_raw,delta_hk_force,relax_lambda,"
-      "relax_neighbor_count\n");
+      "sign_product,Ca,hk_nn_raw,hk_nn_force,delta_hk_raw,delta_hk_force\n");
     fp_trace = fopen ("surface_tension_trace.csv", "w");
     fprintf (fp_trace,
       "run_id,repeat_id,benchmark,case_id,method,deployable,evidence_level,level,grid_n,i,t,dt,"

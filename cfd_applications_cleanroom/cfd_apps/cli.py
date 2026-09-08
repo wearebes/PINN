@@ -64,17 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("E1", "E2"),
         help="Ellipse case selector (benchmark=stationary_ellipse only).",
     )
-    reproduce.add_argument(
-        "--enable-hk-bias-probe",
-        action="store_true",
-        help="Enable separated h*kappa bias diagnostics where allowed.",
-    )
-    reproduce.add_argument(
-        "--relax-lambda",
-        type=float,
-        default=0.25,
-        help="One-step local relaxation lambda for explicit *_RELAX curvature methods.",
-    )
     reproduce.set_defaults(handler=_handle_reproduce)
 
     summarize = subparsers.add_parser(
@@ -169,13 +158,12 @@ def _handle_reproduce(args: argparse.Namespace) -> int:
         from cfd_applications_cleanroom.cfd_apps.stationary import run_canary
 
         levels = args.levels or [6]
-        inert_methods = ["CLSVOF_LS_NATIVE", "NN_DISABLE", "NN_PROBE_ONLY"]
+        inert_methods = ["CLSVOF_LS_NATIVE"]
         methods = args.methods or inert_methods
         report = run_canary(
             methods=methods,
             levels=levels,
             repeat=int(args.repeat),
-            relax_lambda=float(args.relax_lambda),
         )
         print(f"run_id={report['run_id']}")
         if "method_labels" in report:
@@ -184,19 +172,16 @@ def _handle_reproduce(args: argparse.Namespace) -> int:
                 print(f"{method}={label}")
         else:
             print(f"SB-G2={report['SB-G2']}")
-            print(f"SB-G4={report['SB-G4']}")
-            print(f"SB-G5={report['SB-G5']}")
         print(f"evidence_level={report['evidence_level']}")
         return 0
     if args.benchmark == "stationary" and args.tier == "curvature-diagnostic":
         from cfd_applications_cleanroom.cfd_apps.stationary import run_curvature_diagnostic
 
         levels = args.levels or [6]
-        methods = args.methods or ["NN27_RAW", "NN27_D4"]
+        methods = args.methods or ["NN27_RAW"]
         report = run_curvature_diagnostic(
             methods=methods,
             levels=levels,
-            relax_lambda=float(args.relax_lambda),
         )
         print(f"run_id={report['run_id']}")
         print(f"curvature_diagnostic={report['overall_status']}")
@@ -212,11 +197,10 @@ def _handle_reproduce(args: argparse.Namespace) -> int:
         from cfd_applications_cleanroom.cfd_apps.stationary import run_curvature_process
 
         levels = args.levels or [6]
-        methods = args.methods or ["NN27_RAW", "NN27_D4"]
+        methods = args.methods or ["NN27_RAW"]
         report = run_curvature_process(
             methods=methods,
             levels=levels,
-            relax_lambda=float(args.relax_lambda),
         )
         print(f"run_id={report['run_id']}")
         print(f"curvature_process={report['overall_status']}")
@@ -229,7 +213,7 @@ def _handle_reproduce(args: argparse.Namespace) -> int:
         from cfd_applications_cleanroom.cfd_apps.stationary_ellipse import run_curvature_diagnostic
 
         levels = args.levels or [6]
-        methods = args.methods or ["NN27_RAW", "NN27_D4"]
+        methods = args.methods or ["NN27_RAW"]
         cases = args.cases or ["E1"]
         for case in cases:
             report = run_curvature_diagnostic(case=case, methods=methods, levels=levels)
@@ -250,7 +234,7 @@ def _handle_reproduce(args: argparse.Namespace) -> int:
         from cfd_applications_cleanroom.cfd_apps.stationary_ellipse import run_curvature_process
 
         levels = args.levels or [6]
-        methods = args.methods or ["NN_DISABLE", "NN_PROBE_ONLY", "NN27_RAW", "NN27_D4"]
+        methods = args.methods or ["NN27_RAW"]
         cases = args.cases or ["E1"]
         for case in cases:
             report = run_curvature_process(case=case, methods=methods, levels=levels)

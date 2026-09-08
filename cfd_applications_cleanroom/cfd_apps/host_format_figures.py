@@ -19,7 +19,6 @@ CLSVOF_PARITY = REPORTS / "stationary_canary_20260629T201944Z_canary_summary.jso
 NN_CANARY = REPORTS / "stationary_canary_20260630T005436Z_canary_summary.json"
 METHOD_DISPLAY_LABELS = {
     "NN27_RAW": "NN",
-    "NN27_D4": "NND4",
 }
 
 
@@ -83,7 +82,7 @@ def _build_source_tables() -> tuple[list[dict[str, Any]], list[dict[str, Any]], 
             "evidence": clsvof["run_id"],
         }
     )
-    for method in ("NN27_RAW", "NN27_D4"):
+    for method in ("NN27_RAW",):
         method_rows.append(
             {
                 "display": METHOD_DISPLAY_LABELS[method],
@@ -165,7 +164,6 @@ def build_figure() -> dict[str, str]:
         "VOF_HF_NATIVE": "#2A9D8F",
         "CLSVOF_LS_NATIVE": "#69707A",
         "NN27_RAW": "#D95F02",
-        "NN27_D4": "#B2182B",
     }
     fig = plt.figure(figsize=(7.2, 4.4), constrained_layout=True)
     grid = fig.add_gridspec(2, 3, width_ratios=[1.35, 1.0, 1.0], height_ratios=[1.0, 0.92])

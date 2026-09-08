@@ -1,0 +1,9 @@
+{
+  "built_utc": "2026-07-07T12:03:34Z",
+  "canary_run_id": "stationary_canary_20260705T214031Z",
+  "configs": {},
+  "out_csv": "Experiment/report/stationary bubble/stationary_bubble_source.csv.gz",
+  "process_run_id": "stationary_curvature_process_20260705T043136Z",
+  "sha256": "e847446ce3fbe31a8ef27d5ae97e1347e52c1f0fd738f70a864c9f635d83d0c9",
+  "size_bytes": 92785977
+}

@@ -29,7 +29,7 @@ ROUTE_VENDOR_SRC = ROUTE_VENDOR_CLEAN / "src"
 ROUTE_BUILD_ROOT = ROUTE_BUILD / "basilisk_arm64"
 ROUTE_BUILD_SRC = ROUTE_BUILD_ROOT / "src"
 ACTIVE_UNTRUSTED_SRC = Path("/private/tmp/basilisk/src")
-KNOWN_GOOD_NATIVE_CASE = ROOT / "basilisk_reference_gate/cases/spurious_vof_hf_gate.c"
+KNOWN_GOOD_NATIVE_CASE = ROOT / "cfd_applications_cleanroom/cases/stationary/stationary_vof_hf_stock_single.c"
 RESULTS_RAW_TOOLCHAIN = ROOT / "cfd_applications_cleanroom/results/raw/toolchain"
 RESULTS_MANIFESTS = ROOT / "cfd_applications_cleanroom/results/manifests"
 RESULTS_REPORTS = ROOT / "cfd_applications_cleanroom/results/reports"
@@ -300,15 +300,15 @@ def _build_native_qcc(vendor_source_manifest_before: dict[str, Any]) -> dict[str
 
 
 def _compile_native_canary(vendor_source_manifest_before: dict[str, Any]) -> dict[str, Any]:
-    binary = RESULTS_RAW_TOOLCHAIN / "spurious_vof_hf_gate_clean_qcc"
-    compile_log = RESULTS_RAW_TOOLCHAIN / "spurious_vof_hf_gate_clean_qcc.compile.log"
+    binary = RESULTS_RAW_TOOLCHAIN / "stationary_vof_hf_stock_single_clean_qcc"
+    compile_log = RESULTS_RAW_TOOLCHAIN / "stationary_vof_hf_stock_single_clean_qcc.compile.log"
     if binary.exists():
         binary.unlink()
     build_source_before = tree_manifest(ROUTE_BUILD_SRC, source_only=True)
     cmd = [
         str(ROUTE_BUILD_SRC / "qcc"),
         "-autolink",
-        "spurious_vof_hf_gate.c",
+        KNOWN_GOOD_NATIVE_CASE.name,
         "-o",
         str(binary),
         "-lm",

@@ -1,0 +1,10 @@
+phi_index,mean,std,variance,source_split,feature_count,dataset_path
+1,0.0,8.94210147857666,79.961181640625,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+2,0.0,6.985036849975586,48.790740966796875,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+3,0.0,8.946277618408203,80.03588104248047,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+4,0.0,6.937404632568359,48.12758255004883,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+5,0.0,4.148770809173584,17.212299346923828,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+6,0.0,6.951898574829102,48.328895568847656,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+7,0.0,8.92905330657959,79.72798919677734,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+8,0.0,6.978145122528076,48.69450759887695,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5
+9,0.0,8.948504447937012,80.07572937011719,train,9,/autodl-fs/data/256_cellcenter_phi9_mixed.h5

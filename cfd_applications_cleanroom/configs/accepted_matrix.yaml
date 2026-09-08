@@ -1,6 +1,6 @@
 stationary:
   accepted_local:
-    methods: [NN27_RAW, NN27_D4]
+    methods: [NN27_RAW]
     levels: [6]
     repeat: 3
     requires: [source_audit, native_no_nn_canary, inert_overlay]

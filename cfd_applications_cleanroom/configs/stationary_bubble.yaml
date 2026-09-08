@@ -21,8 +21,8 @@
     "full_time_fraction_gate": 0.999
   },
   "canary": {
-    "methods": ["CLSVOF_LS_NATIVE", "NN_DISABLE", "NN_PROBE_ONLY"],
-    "deployable_methods": ["NN27_RAW", "NN27_D4"],
+    "methods": ["CLSVOF_LS_NATIVE"],
+    "deployable_methods": ["NN27_RAW"],
     "levels": [6],
     "repeat": 3,
     "full_time_fraction_gate": 0.999,

@@ -29,7 +29,6 @@ from cfd_applications_cleanroom.cfd_apps.curvature_diagnostic_shared import (
     BUILD_SRC,
     NN_DIR,
     NN_MODE_VALUES,
-    RELAX_METHODS,
     VENDOR_SRC,
     StationaryGateError,
     canary_nn_metadata as _canary_nn_metadata,
@@ -53,11 +52,10 @@ NN_CLSVOF_SOURCE = CASE_DIR / "stationary_clsvof_nn.c"
 CURVATURE_FIELD_SOURCE = CASE_DIR / "stationary_curvature_field.c"
 CURVATURE_PROCESS_SOURCE = CASE_DIR / "stationary_curvature_process.c"
 CONFIG_PATH = ROOT / "cfd_applications_cleanroom/configs/stationary_bubble.yaml"
-INERT_CANARY_METHODS = ("CLSVOF_LS_NATIVE", "NN_DISABLE", "NN_PROBE_ONLY")
-PAPER_DEPLOYABLE_METHODS = ("NN27_RAW", "NN27_D4")
+INERT_CANARY_METHODS = ("CLSVOF_LS_NATIVE",)
+PAPER_DEPLOYABLE_METHODS = ("NN27_RAW",)
 DEPLOYABLE_CANARY_METHODS = PAPER_DEPLOYABLE_METHODS
-EXPERIMENTAL_RELAX_METHODS = ("NN27_RAW_RELAX", "NN27_D4_RELAX")
-SUPPORTED_DEPLOYABLE_METHODS = PAPER_DEPLOYABLE_METHODS + EXPERIMENTAL_RELAX_METHODS
+SUPPORTED_DEPLOYABLE_METHODS = PAPER_DEPLOYABLE_METHODS
 CURVATURE_DIAGNOSTIC_METHODS = SUPPORTED_DEPLOYABLE_METHODS
 CURVATURE_PROCESS_METHODS = SUPPORTED_DEPLOYABLE_METHODS
 CURVATURE_PROCESS_LEVELS = (4, 5, 6, 7, 8, 9)
@@ -65,33 +63,7 @@ CANARY_METHODS = INERT_CANARY_METHODS + SUPPORTED_DEPLOYABLE_METHODS
 STATIONARY_TMAX_EXPECTED = 0.8 * 0.8 / ((0.8 / 12000.0) ** 0.5)
 
 
-def _validate_relax_lambda(relax_lambda: float) -> float:
-    if not math.isfinite(relax_lambda):
-        raise StationaryGateError("relax_lambda_not_finite")
-    if relax_lambda < 0.0 or relax_lambda > 1.0:
-        raise StationaryGateError("relax_lambda_out_of_range")
-    return float(relax_lambda)
-
-
-def _relax_qcc_flags(method: str, relax_lambda: float) -> tuple[str, ...]:
-    if method in RELAX_METHODS:
-        return (f"-DCLEANROOM_RELAX_LAMBDA={relax_lambda:.17g}",)
-    return ()
-
-
-def _curvature_filter_metadata(method: str, relax_lambda: float) -> dict[str, Any]:
-    if method in RELAX_METHODS:
-        return {
-            "status": "enabled",
-            "type": "one_step_4_neighbor_local_relaxation",
-            "space": "dimensionless_hkappa",
-            "lambda": relax_lambda,
-            "mask": "|d|<=2*Delta and neighbor hkappa != nodata and isfinite",
-        }
-    return {"status": "disabled"}
-
-
-def _compile_curvature_binary(*, method, level, run_root, source_audit, relax_lambda):
+def _compile_curvature_binary(*, method, level, run_root, source_audit):
     return _shared_compile_curvature_binary(
         method=method,
         level=level,
@@ -100,11 +72,10 @@ def _compile_curvature_binary(*, method, level, run_root, source_audit, relax_la
         case_source=CURVATURE_FIELD_SOURCE,
         case_dir=CASE_DIR,
         binary_stem="stationary_curvature",
-        extra_qcc_flags=_relax_qcc_flags(method, relax_lambda),
     )
 
 
-def _compile_curvature_process_binary(*, method, level, run_root, source_audit, relax_lambda):
+def _compile_curvature_process_binary(*, method, level, run_root, source_audit):
     return _shared_compile_curvature_process_binary(
         method=method,
         level=level,
@@ -113,7 +84,6 @@ def _compile_curvature_process_binary(*, method, level, run_root, source_audit, 
         case_source=CURVATURE_PROCESS_SOURCE,
         case_dir=CASE_DIR,
         binary_stem="stationary_curvature_process",
-        extra_qcc_flags=_relax_qcc_flags(method, relax_lambda),
     )
 
 
@@ -214,10 +184,8 @@ def run_canary(
     methods: list[str],
     levels: list[int],
     repeat: int,
-    relax_lambda: float = 0.25,
 ) -> dict[str, Any]:
     source_audit = _load_required_source_audit()
-    relax_lambda = _validate_relax_lambda(relax_lambda)
     methods = methods or list(CANARY_METHODS)
     unknown = sorted(set(methods) - set(CANARY_METHODS))
     if unknown:
@@ -232,7 +200,6 @@ def run_canary(
         repeat=repeat,
         run_kind=run_kind,
         parity_report=parity_report,
-        relax_lambda=relax_lambda,
     )
     run_id = "stationary_canary_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_root = RAW / "stationary" / run_id
@@ -250,7 +217,6 @@ def run_canary(
                 level=level,
                 run_root=run_root,
                 source_audit=source_audit,
-                relax_lambda=relax_lambda,
             )
             for repeat_index in range(repeat):
                 row, summary = _run_canary_binary_one(
@@ -304,10 +270,8 @@ def run_curvature_diagnostic(
     *,
     methods: list[str],
     levels: list[int],
-    relax_lambda: float = 0.25,
 ) -> dict[str, Any]:
     source_audit = _load_required_source_audit()
-    relax_lambda = _validate_relax_lambda(relax_lambda)
     methods = methods or list(PAPER_DEPLOYABLE_METHODS)
     unknown = sorted(set(methods) - set(CURVATURE_DIAGNOSTIC_METHODS))
     if unknown:
@@ -323,10 +287,6 @@ def run_curvature_diagnostic(
         "tier": "curvature-diagnostic",
         "levels": levels,
         "methods": methods,
-        "experimental_relax": {
-            "relax_methods_requested": [m for m in methods if m in RELAX_METHODS],
-            "relax_lambda": relax_lambda,
-        },
         "case_source": route_relative(CURVATURE_FIELD_SOURCE),
         "paper_model_line": "baseline_hgradient",
         "field_contract": {
@@ -351,7 +311,6 @@ def run_curvature_diagnostic(
                 level=level,
                 run_root=run_root,
                 source_audit=source_audit,
-                relax_lambda=relax_lambda,
             )
             row, summary = _run_curvature_binary_one(
                 run_id=run_id,
@@ -362,9 +321,6 @@ def run_curvature_diagnostic(
                 compile_evidence=compile_evidence,
                 resolved_config_path=resolved_config_path,
                 resolved_config_sha256=resolved_config_sha256,
-                extra_summary_fields={
-                    "curvature_filter": _curvature_filter_metadata(method, relax_lambda)
-                },
             )
             rows.append(row)
             summaries.append(summary)
@@ -391,10 +347,8 @@ def run_curvature_process(
     *,
     methods: list[str],
     levels: list[int],
-    relax_lambda: float = 0.25,
 ) -> dict[str, Any]:
     source_audit = _load_required_source_audit()
-    relax_lambda = _validate_relax_lambda(relax_lambda)
     methods = methods or list(PAPER_DEPLOYABLE_METHODS)
     unknown = sorted(set(methods) - set(CURVATURE_PROCESS_METHODS))
     if unknown:
@@ -411,10 +365,6 @@ def run_curvature_process(
         "tier": "curvature-process",
         "levels": levels,
         "methods": methods,
-        "experimental_relax": {
-            "relax_methods_requested": [m for m in methods if m in RELAX_METHODS],
-            "relax_lambda": relax_lambda,
-        },
         "paper_model_line": "baseline_hgradient",
         "case_source": route_relative(CURVATURE_PROCESS_SOURCE),
         "snapshot_fractions": [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0],
@@ -442,7 +392,6 @@ def run_curvature_process(
                 level=level,
                 run_root=run_root,
                 source_audit=source_audit,
-                relax_lambda=relax_lambda,
             )
             row, summary = _run_curvature_process_binary_one(
                 run_id=run_id,
@@ -453,9 +402,6 @@ def run_curvature_process(
                 compile_evidence=compile_evidence,
                 resolved_config_path=resolved_config_path,
                 resolved_config_sha256=resolved_config_sha256,
-                extra_summary_fields={
-                    "curvature_filter": _curvature_filter_metadata(method, relax_lambda)
-                },
             )
             rows.append(row)
             summaries.append(summary)
@@ -556,7 +502,6 @@ def _compile_canary_binary(
     level: int,
     run_root: Path,
     source_audit: dict[str, Any],
-    relax_lambda: float,
 ) -> dict[str, Any]:
     compile_dir = run_root / "build" / method / f"L{level}"
     compile_dir.mkdir(parents=True, exist_ok=True)
@@ -582,7 +527,6 @@ def _compile_canary_binary(
     ]
     if method in NN_MODE_VALUES:
         cmd.append(f"-DNN_MODE={NN_MODE_VALUES[method]}")
-        cmd.extend(_relax_qcc_flags(method, relax_lambda))
         cmd.extend([f"-DMETHOD_ID=\\\"{method}\\\"", f"-I{NN_DIR}"])
     cmd.append(case_source.name)
     if nn_object_evidence:
@@ -1033,27 +977,8 @@ def _evaluate_canary_gates(
     sb_g2_pass = bool(native_summaries) and all(
         summary["finite_gate"] == "PASS" for summary in native_summaries
     )
-    sb_g4 = _canary_overlay_gate(
-        native_by_key=by_key,
-        overlay_method="NN_DISABLE",
-        levels=levels,
-        expected_repeat=expected_repeat,
-        gate=1e-12,
-        methods=methods,
-    )
-    sb_g5 = _canary_overlay_gate(
-        native_by_key=by_key,
-        overlay_method="NN_PROBE_ONLY",
-        levels=levels,
-        expected_repeat=expected_repeat,
-        gate=1e-12,
-        methods=methods,
-    )
-
     method_pass = {
         "CLSVOF_LS_NATIVE": sb_g2_pass,
-        "NN_DISABLE": sb_g4["pass"],
-        "NN_PROBE_ONLY": sb_g5["pass"],
     }
     for row in rows:
         method = str(row["method"])
@@ -1063,12 +988,6 @@ def _evaluate_canary_gates(
         if method == "CLSVOF_LS_NATIVE":
             row["result_status"] = "accepted_clsvof_native" if accepted else "failed_clsvof_native"
             row["evidence_level"] = "controlled_diagnostic" if accepted else "runtime_smoke"
-        elif method == "NN_DISABLE":
-            row["result_status"] = "accepted_inert_overlay" if accepted else "failed_inert_overlay"
-            row["evidence_level"] = "parity_validated" if accepted else "runtime_smoke"
-        elif method == "NN_PROBE_ONLY":
-            row["result_status"] = "accepted_inert_probe" if accepted else "failed_inert_probe"
-            row["evidence_level"] = "parity_validated" if accepted else "runtime_smoke"
         _update_status_file(row)
 
     repeated_all_pass = all(
@@ -1076,7 +995,7 @@ def _evaluate_canary_gates(
         for method_data in repeat_consistency.values()
         for level_data in method_data.values()
     )
-    overall_pass = sb_g2_pass and sb_g4["pass"] and sb_g5["pass"] and repeated_all_pass
+    overall_pass = sb_g2_pass and repeated_all_pass
     return {
         "run_id": run_id,
         "benchmark": "stationary",
@@ -1084,13 +1003,9 @@ def _evaluate_canary_gates(
         "methods": methods,
         "levels": levels,
         "SB-G2": "PASS" if sb_g2_pass else "FAIL",
-        "SB-G4": "PASS" if sb_g4["pass"] else "FAIL",
-        "SB-G5": "PASS" if sb_g5["pass"] else "FAIL",
-        "SB_G4_DETAILS": sb_g4,
-        "SB_G5_DETAILS": sb_g5,
         "repeat_consistency": repeat_consistency,
         "overall_pass": overall_pass,
-        "evidence_level": "parity_validated" if overall_pass else "runtime_smoke",
+        "evidence_level": "controlled_diagnostic" if overall_pass else "runtime_smoke",
         "summaries": summaries,
     }
 
@@ -1350,8 +1265,6 @@ def _render_canary_report(report: dict[str, Any]) -> str:
         "",
         f"- run_id: `{report['run_id']}`",
         f"- SB-G2: `{report['SB-G2']}`",
-        f"- SB-G4: `{report['SB-G4']}`",
-        f"- SB-G5: `{report['SB-G5']}`",
         f"- evidence_level: `{report['evidence_level']}`",
         "",
         "| method | level | repeats | Ca_tail_max spread | repeat consistency |",
@@ -1363,15 +1276,6 @@ def _render_canary_report(report: dict[str, Any]) -> str:
                 f"| {method} | {level} | {consistency['repeat_count']} | "
                 f"{consistency['Ca_tail_max_spread']:.6e} | {consistency['pass']} |"
             )
-    lines.extend(
-        [
-            "",
-            "## Inert Overlay",
-            "",
-            f"- SB-G4 max_abs_Ca_diff: `{report['SB_G4_DETAILS']['max_abs_Ca_diff']:.17g}`",
-            f"- SB-G5 max_abs_Ca_diff: `{report['SB_G5_DETAILS']['max_abs_Ca_diff']:.17g}`",
-        ]
-    )
     return "\n".join(lines) + "\n"
 
 
@@ -1520,7 +1424,6 @@ def _resolved_stationary_canary_config(
     repeat: int,
     run_kind: str,
     parity_report: dict[str, Any] | None,
-    relax_lambda: float,
 ) -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         raise StationaryGateError("stationary_config_missing")
@@ -1537,10 +1440,6 @@ def _resolved_stationary_canary_config(
     deployable_methods = list(canary.get("deployable_methods", []))
     if deployable_methods != list(DEPLOYABLE_CANARY_METHODS):
         raise StationaryGateError("stationary_deployable_canary_methods_config_mismatch")
-    if float(canary.get("sb_g4_max_abs_ca_gate", 0.0)) != 1e-12:
-        raise StationaryGateError("stationary_canary_sb_g4_gate_mismatch")
-    if float(canary.get("sb_g5_max_abs_ca_gate", 0.0)) != 1e-12:
-        raise StationaryGateError("stationary_canary_sb_g5_gate_mismatch")
     base["resolved"] = {
         "tier": "canary",
         "run_kind": run_kind,
@@ -1550,16 +1449,7 @@ def _resolved_stationary_canary_config(
         "requires_parity_run_id": parity_report.get("run_id") if parity_report else "",
         "case_sources": {
             "CLSVOF_LS_NATIVE": route_relative(NATIVE_CLSVOF_SOURCE),
-            "NN_DISABLE": route_relative(NN_CLSVOF_SOURCE),
-            "NN_PROBE_ONLY": route_relative(NN_CLSVOF_SOURCE),
             "NN27_RAW": route_relative(NN_CLSVOF_SOURCE),
-            "NN27_D4": route_relative(NN_CLSVOF_SOURCE),
-            "NN27_RAW_RELAX": route_relative(NN_CLSVOF_SOURCE),
-            "NN27_D4_RELAX": route_relative(NN_CLSVOF_SOURCE),
-        },
-        "experimental_relax": {
-            "relax_methods_requested": [m for m in methods if m in RELAX_METHODS],
-            "relax_lambda": relax_lambda,
         },
         "source_config": route_relative(CONFIG_PATH),
     }
@@ -1589,8 +1479,6 @@ def _load_latest_inert_parity_report() -> dict[str, Any]:
             data.get("tier") == "canary"
             and set(data.get("methods", [])) == set(INERT_CANARY_METHODS)
             and data.get("SB-G2") == "PASS"
-            and data.get("SB-G4") == "PASS"
-            and data.get("SB-G5") == "PASS"
             and data.get("overall_pass") is True
         ):
             return data

@@ -26,7 +26,6 @@ docs/superpowers/plans/2026-07-03-stationary-ellipse-curvature-stress-diagnostic
 #include <stdlib.h>
 
 #define NN27_RAW_MODE 2
-#define NN27_D4_MODE 3
 
 #ifndef NN_MODE
 # define NN_MODE NN27_RAW_MODE
@@ -53,11 +52,7 @@ docs/superpowers/plans/2026-07-03-stationary-ellipse-curvature-stress-diagnostic
 # define CASE_ID "stationary_ellipse_curvature_field"
 #endif
 #ifndef METHOD_ID
-# if NN_MODE == NN27_D4_MODE
-#  define METHOD_ID "NN27_D4"
-# else
-#  define METHOD_ID "NN27_RAW"
-# endif
+# define METHOD_ID "NN27_RAW"
 #endif
 
 FILE * fp = NULL;
@@ -78,11 +73,7 @@ static inline void cleanroom_build_raw_from_d (Point point, scalar field, double
 }
 
 static inline double cleanroom_method_hkappa (const double raw[27]) {
-#if NN_MODE == NN27_D4_MODE
-  return nn_hkappa_d4_clean (raw);
-#else
   return mlp_hkappa_clean (raw);
-#endif
 }
 
 int main() {

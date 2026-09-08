@@ -129,29 +129,41 @@ class LevelSetReinitializer:
             return self._smoothed_sign(phi_stage, h)
         return self._smoothed_sign(phi0, h)
 
-    def reinitialize(self, phi0: np.ndarray, h: float, n_steps: int) -> np.ndarray:
+    def reinitialize(
+        self,
+        phi0: np.ndarray,
+        h: float,
+        n_steps: int,
+        *,
+        sign_reference: np.ndarray | None = None,
+    ) -> np.ndarray:
         if n_steps <= 0:
             return phi0.copy()
 
         phi = phi0.astype(np.float64, copy=True)
+        reference = phi0 if sign_reference is None else np.asarray(sign_reference)
+        if reference.shape != phi.shape:
+            raise ValueError(
+                f"sign_reference shape {reference.shape} does not match phi shape {phi.shape}."
+            )
         dt = self.cfl * h
 
         for _ in range(n_steps):
             if self.time_order == 2:
-                sign_1 = self._sign_field(phi, phi0, h)
+                sign_1 = self._sign_field(phi, reference, h)
                 rhs_1 = self._rhs(phi, sign_1, h)
                 phi_1 = phi + dt * rhs_1
-                sign_2 = self._sign_field(phi_1, phi0, h)
+                sign_2 = self._sign_field(phi_1, reference, h)
                 rhs_2 = self._rhs(phi_1, sign_2, h)
                 phi = 0.5 * phi + 0.5 * (phi_1 + dt * rhs_2)
             else:
-                sign_1 = self._sign_field(phi, phi0, h)
+                sign_1 = self._sign_field(phi, reference, h)
                 rhs_1 = self._rhs(phi, sign_1, h)
                 phi_1 = phi + dt * rhs_1
-                sign_2 = self._sign_field(phi_1, phi0, h)
+                sign_2 = self._sign_field(phi_1, reference, h)
                 rhs_2 = self._rhs(phi_1, sign_2, h)
                 phi_2 = 0.75 * phi + 0.25 * (phi_1 + dt * rhs_2)
-                sign_3 = self._sign_field(phi_2, phi0, h)
+                sign_3 = self._sign_field(phi_2, reference, h)
                 rhs_3 = self._rhs(phi_2, sign_3, h)
                 phi = (1.0 / 3.0) * phi + (2.0 / 3.0) * (phi_2 + dt * rhs_3)
         return phi

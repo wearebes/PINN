@@ -44,9 +44,9 @@ CURVATURE_PROCESS_SOURCE = CASE_DIR / "stationary_ellipse_curvature_process.c"
 GEOMETRY_SOURCE = CASE_DIR / "ellipse_geometry_clean.c"
 BENCHMARK = "stationary_ellipse"
 
-PAPER_DEPLOYABLE_METHODS = ("NN27_RAW", "NN27_D4")
+PAPER_DEPLOYABLE_METHODS = ("NN27_RAW",)
 CURVATURE_DIAGNOSTIC_METHODS = PAPER_DEPLOYABLE_METHODS
-CURVATURE_PROCESS_METHODS = ("NN_DISABLE", "NN_PROBE_ONLY") + PAPER_DEPLOYABLE_METHODS
+CURVATURE_PROCESS_METHODS = PAPER_DEPLOYABLE_METHODS
 CURVATURE_DIAGNOSTIC_LEVELS = (6, 7, 8)
 CURVATURE_PROCESS_LEVELS = (6, 7, 8)
 
@@ -263,29 +263,13 @@ def _analytic_reference_summary(field_csv: Path) -> dict[str, Any]:
 
 
 def _roughness_comparison(summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    by_method = {summary["method"]: summary for summary in summaries}
-    if "NN27_RAW" not in by_method or "NN27_D4" not in by_method:
-        return {}
-    raw = by_method["NN27_RAW"]["analytic_reference"]["force_band"]
-    d4 = by_method["NN27_D4"]["analytic_reference"]["force_band"]
-    fields = ("std_delta_kappa", "max_abs_delta_hk", "p95_abs_delta_hk")
-    ratios = {}
-    losses = 0
-    for field in fields:
-        ratio = d4[field] / raw[field] if raw[field] else float("nan")
-        ratios[f"{field}_ratio"] = ratio
-        if ratio > 1.2:
-            losses += 1
-    ratios["fields_lost"] = losses
-    ratios["roughness_diagnostic_failure"] = losses >= 2
-    ratios["comparison"] = "NN27_D4_vs_NN27_RAW"
-    return ratios
+    return {}
 
 
 def run_curvature_process(*, case: str, methods: list[str], levels: list[int]) -> dict[str, Any]:
     ellipse_case = _resolve_case(case)
     source_audit = load_required_source_audit()
-    methods = methods or ["NN_DISABLE", "NN_PROBE_ONLY", *PAPER_DEPLOYABLE_METHODS]
+    methods = methods or list(PAPER_DEPLOYABLE_METHODS)
     unknown = sorted(set(methods) - set(CURVATURE_PROCESS_METHODS))
     if unknown:
         raise StationaryGateError(f"stationary_ellipse_curvature_process_unknown_methods:{','.join(unknown)}")
@@ -321,14 +305,13 @@ def run_curvature_process(*, case: str, methods: list[str], levels: list[int]) -
 
     rows: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
-    native_trace_csv_by_level: dict[int, Path] = {}
     for level in levels:
         geometry_compile_dir = run_root / "build" / "geometry" / f"L{level}"
         geometry_compile_dir.mkdir(parents=True, exist_ok=True)
         geometry_evidence = _compile_ellipse_geometry_object(
             ellipse_case=ellipse_case, compile_dir=geometry_compile_dir
         )
-        ordered_methods = [m for m in ("NN_DISABLE", "NN_PROBE_ONLY", "NN27_RAW", "NN27_D4") if m in methods]
+        ordered_methods = [m for m in ("NN27_RAW",) if m in methods]
         for method in ordered_methods:
             compile_evidence = compile_curvature_process_binary(
                 method=method,
@@ -356,8 +339,6 @@ def run_curvature_process(*, case: str, methods: list[str], levels: list[int]) -
             summary["case"] = case
             summary["a"] = ellipse_case.a
             summary["b"] = ellipse_case.b
-            if method == "NN_DISABLE":
-                native_trace_csv_by_level[level] = Path(summary["surface_tension_trace_csv"])
             rows.append(row)
             summaries.append(summary)
 
@@ -373,7 +354,6 @@ def run_curvature_process(*, case: str, methods: list[str], levels: list[int]) -
     stale_output_guard(manifest_path)
 
     primary_level = levels[0]
-    native_trace_override = native_trace_csv_by_level.get(primary_level)
     report = write_curvature_process_report(
         run_id=run_id,
         methods=methods,
@@ -382,7 +362,7 @@ def run_curvature_process(*, case: str, methods: list[str], levels: list[int]) -
         manifest_path=manifest_path,
         benchmark=BENCHMARK,
         artifact_prefix=f"stationary_ellipse_curvature_process_{case.lower()}",
-        native_trace_csv_override=native_trace_override,
+        native_trace_csv_override=None,
         trace_yscale="log",
     )
     report["case"] = case

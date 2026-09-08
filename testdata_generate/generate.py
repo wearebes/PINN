@@ -50,7 +50,7 @@ _STORE_SCHEMA: tuple[tuple[str, tuple[int, ...], Any], ...] = (
 
 def build_grid(L: float, N: int) -> tuple[np.ndarray, np.ndarray, float]:
     x = np.linspace(-float(L), float(L), int(N), dtype=np.float64)
-    X, Y = np.meshgrid(x, x, indexing="xy")
+    X, Y = np.meshgrid(x, x, indexing="ij")
     h = 2.0 * float(L) / (int(N) - 1)
     return X, Y, float(h)
 
@@ -258,7 +258,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
     scenario_rho_models = available_rho_models(cfg.scenarios)
 
     reinitializer = LevelSetReinitializer(
-        indexing="xy",
+        indexing="ij",
         cfl=cfg.cfl,
         eps_weno=cfg.eps_weno,
         eps_sign_factor=cfg.eps_sign_factor,
@@ -307,7 +307,13 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
             print(f"    iter= 0 samples={count}")
 
         for iteration in range(1, max(cfg.test_iters) + 1):
-            phi = reinitializer.reinitialize(phi, h_from_grid, 1)
+            sign_reference = phi0 if cfg.sign_mode == "frozen_phi0" else None
+            phi = reinitializer.reinitialize(
+                phi,
+                h_from_grid,
+                1,
+                sign_reference=sign_reference,
+            )
             if iteration not in cfg.test_iters:
                 continue
             count = _append_case_iter(

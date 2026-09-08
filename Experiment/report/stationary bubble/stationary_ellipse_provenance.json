@@ -1,0 +1,107 @@
+{
+  "built_utc": "2026-07-07T16:41:14Z",
+  "configs": {
+    "cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260707T154120Z/config.resolved.json": {
+      "a": 0.4472136,
+      "b": 0.3577709,
+      "benchmark": "stationary_ellipse",
+      "case": "E1",
+      "case_source": "cfd_applications_cleanroom/cases/stationary_ellipse/stationary_ellipse_curvature_process.c",
+      "diameter_equiv": 0.8000000304105994,
+      "expected_tmax": 78.38367623848882,
+      "levels": [
+        6
+      ],
+      "methods": [
+        "NN_DISABLE"
+      ],
+      "not_a_stationary_bubble_gate": true,
+      "snapshot_fractions": [
+        0.0,
+        0.3333333333333333,
+        0.6666666666666666,
+        1.0
+      ],
+      "tier": "curvature-process"
+    },
+    "cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E1_20260707T154357Z/config.resolved.json": {
+      "a": 0.4472136,
+      "b": 0.3577709,
+      "benchmark": "stationary_ellipse",
+      "case": "E1",
+      "case_source": "cfd_applications_cleanroom/cases/stationary_ellipse/stationary_ellipse_curvature_process.c",
+      "diameter_equiv": 0.8000000304105994,
+      "expected_tmax": 78.38367623848882,
+      "levels": [
+        6,
+        7
+      ],
+      "methods": [
+        "NN_DISABLE",
+        "NN27_RAW"
+      ],
+      "not_a_stationary_bubble_gate": true,
+      "snapshot_fractions": [
+        0.0,
+        0.3333333333333333,
+        0.6666666666666666,
+        1.0
+      ],
+      "tier": "curvature-process"
+    },
+    "cfd_applications_cleanroom/results/raw/stationary_ellipse/stationary_ellipse_curvature_process_E2_20260707T154358Z/config.resolved.json": {
+      "a": 0.4898979,
+      "b": 0.3265986,
+      "benchmark": "stationary_ellipse",
+      "case": "E2",
+      "case_source": "cfd_applications_cleanroom/cases/stationary_ellipse/stationary_ellipse_curvature_process.c",
+      "diameter_equiv": 0.799999920707346,
+      "expected_tmax": 78.38366011546945,
+      "levels": [
+        6,
+        7
+      ],
+      "methods": [
+        "NN_DISABLE",
+        "NN27_RAW"
+      ],
+      "not_a_stationary_bubble_gate": true,
+      "snapshot_fractions": [
+        0.0,
+        0.3333333333333333,
+        0.6666666666666666,
+        1.0
+      ],
+      "tier": "curvature-process"
+    }
+  },
+  "missing_expected_units": [
+    "E1/L6/NN_PROBE_ONLY",
+    "E1/L6/NN27_D4",
+    "E1/L7/NN_PROBE_ONLY",
+    "E1/L7/NN27_D4",
+    "E1/L8/NN_PROBE_ONLY",
+    "E1/L8/NN27_D4",
+    "E2/L6/NN_PROBE_ONLY",
+    "E2/L6/NN27_D4",
+    "E2/L7/NN_PROBE_ONLY",
+    "E2/L7/NN27_D4",
+    "E2/L8/NN_PROBE_ONLY",
+    "E2/L8/NN27_D4",
+    "diagnostic:E1/L6/NN27_RAW",
+    "diagnostic:E1/L6/NN27_D4",
+    "diagnostic:E1/L7/NN27_RAW",
+    "diagnostic:E1/L7/NN27_D4",
+    "diagnostic:E1/L8/NN27_RAW",
+    "diagnostic:E1/L8/NN27_D4",
+    "diagnostic:E2/L6/NN27_RAW",
+    "diagnostic:E2/L6/NN27_D4",
+    "diagnostic:E2/L7/NN27_RAW",
+    "diagnostic:E2/L7/NN27_D4",
+    "diagnostic:E2/L8/NN27_RAW",
+    "diagnostic:E2/L8/NN27_D4"
+  ],
+  "out_csv": "Experiment/report/stationary bubble/stationary_ellipse_source.csv.gz",
+  "sha256": "780ac22544f774a806df2c0254f02840582c6b5215fa7f2451878e3d527c3bfa",
+  "size_bytes": 206240929
+}
