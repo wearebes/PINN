@@ -1,3 +1,0 @@
-grid_n,method,E_rms_ref_over_A0,E_ratio_to_CLSVOF,Delta_rms_to_CLSVOF_over_A0,peak_ref_over_A0,row_count,evidence
-64,CLSVOF-LS,0.007226690713,1,0,0.014614000000,738,official_basilisk_capwave.c_clsvof_rerun_20260709
-128,CLSVOF-LS,0.002051875396,1,0,0.004272000000,738,official_basilisk_capwave.c_clsvof_rerun_20260709

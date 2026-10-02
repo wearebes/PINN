@@ -28,6 +28,7 @@ from evaluate.shared import (
     resolve_feature_transform,
     write_csv_rows,
 )
+from train_generate.features import local_normal_features
 from evaluate.feature_contract import use_scaled_h_features_for_inference
 from train_generate.geometry_core import (
     build_grid,
@@ -71,8 +72,8 @@ ELLIPSE_CASES = (
 # ============================================================
 
 
-def _build_blueprint(case: EllipseCase, *, rho_model: int) -> dict[str, Any]:
-    h = 1.0 / float(rho_model - 1)
+def _build_blueprint(case: EllipseCase, *, rho_model: int, grid_convention: str = "endpoint_nodes") -> dict[str, Any]:
+    h = 1.0 / float(rho_model if grid_convention == "cell_count_cell_centres" else rho_model - 1)
     return {
         "meta": {
             "shape_type": "ellipse",
@@ -191,8 +192,8 @@ def run_ellipse_evaluation(
     # ---- 3. per-case loop ----
     case_rows: list[dict[str, Any]] = []
     for case_id, case in enumerate(ELLIPSE_CASES):
-        blueprint = _build_blueprint(case, rho_model=rho_model)
-        X, Y = build_grid(int(rho_model))
+        blueprint = _build_blueprint(case, rho_model=rho_model, grid_convention=data_config.grid_convention)
+        X, Y = build_grid(int(rho_model), data_config.grid_convention)
         phi0 = build_phi0_grid(blueprint, "sdf", data_config=data_config, X=X, Y=Y)
         indices = interface_indices(phi0)
         if indices.size == 0:
@@ -203,10 +204,16 @@ def run_ellipse_evaluation(
         phi9, features = build_raw_features(
             phi0, indices, scale_h=use_scaled_h_features_for_inference(data_config), h=h_value
         )
-        if feature_transform["feature_version"] in (2, 3):
+        if feature_transform["feature_version"] == 6:
+            features = np.concatenate([features, local_normal_features(phi9)], axis=1)
+        elif feature_transform["feature_version"] in (2, 3, 4, 5):
             # V2 keeps 27D; V3 (standardize_pca18) reuses the same 27D raw build,
             # and apply_feature_transform standardizes(27D) then projects to 18D.
-            grad9 = extract_grad9(phi0, indices)
+            # V4 builds the center normal (11D); V5 builds cross normals (19D).
+            grad9 = extract_grad9(
+                phi0, indices, center_only=feature_transform["raw_feature_dim"] == 11,
+                cross_only=feature_transform["raw_feature_dim"] == 19
+            )
             features = np.concatenate(
                 [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
             ).astype(np.float32, copy=False)

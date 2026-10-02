@@ -33,11 +33,40 @@ python -m train_generate --output dataset/256/256_ah.h5           --resolutions 
 python -m train_generate --output dataset/256/256_hgradient_ah.h5 --resolutions 256 --augment-alpha 0.5,1.0,2.0 --augment-gradient   # V2.3 27D
 # (128 同理，把 256 换成 128)
 
+# 11D: keep the same generation arguments; replace --augment-gradient with:
+#   --feature-mode phi9_center_normal
+# Input: phi9 (same --scale-h / --augment-alpha scaling) + center nx, ny.
+# To match the formal cell-centre datasets, also pass:
+#   --grid-convention cell_count_cell_centres  (h=1/N, x=(i+0.5)/N)
+# Default endpoint_nodes retains the legacy grid.
+# Sampling, labels, splits and augmentations are unchanged. Explicit mode overrides
+# --augment-gradient. Other modes: phi9 (9D), phi9_full_normal (27D).
+python -m train_generate --output dataset/256/256_hcenter_normal.h5 --resolutions 256 --scale-h --feature-mode phi9_center_normal
+
+# 19D: keep all phi9 values; retain normals only at up, left, center, right, down.
+# V5 layout: [phi9 | nx_cross5 | ny_cross5]. With --scale-h, phi9 means phi9/h.
+# Cross normals preserve 27D stencil indices [1,3,4,5,7] (zero-based).
+# This is a feature-only change: keep the other arguments from the 27D run.
+# Formal cell-centre example (N64: change resolutions and the output path):
+python -m train_generate --output dataset/32/32_cellcenter_hcross_normal.h5 --resolutions 32 --grid-convention cell_count_cell_centres --scale-h --feature-mode phi9_cross_normal
+
 # 2. Train (baseline / V2.x)
 python -m model.train \
   --dataset-output dataset/32/32_hgradient.h5 \
   --output-model out/32/baseline_32_hgradient.pt \
   --normalization-csv out/32/baseline_32_hgradient.csv
+
+# 11D uses the same training settings; input_dim is inferred from the dataset.
+python -m model.train \
+  --dataset-output dataset/256/256_hcenter_normal.h5 \
+  --output-model out/256/baseline_256_hcenter_normal.pt \
+  --normalization-csv out/256/baseline_256_hcenter_normal.csv
+
+# 19D also infers input_dim from its dataset; reuse the 27D training arguments.
+python -m model.train \
+  --dataset-output dataset/32/32_cellcenter_hcross_normal.h5 \
+  --output-model out/32/cell_32_hcross_normal.pt \
+  --normalization-csv out/32/cell_32_hcross_normal_phi9.csv
 
 # 2b. Train with PCA-18 (V3, MLP only)
 # 源必须是 V2.1 的 27D 数据集（--augment-gradient 生成的 *_hgradient.h5）。
@@ -54,6 +83,11 @@ python -m model.train \
 # --rho-model 接受任意整数 >= 4；h = 1/(rho_model-1)，接口外留 2 格 margin。
 python -m testdata_generate --rho-model 256 --scale-h          --output test_data/flower_rho256_h.h5          # 9D
 python -m testdata_generate --rho-model 256 --augment-gradient --output test_data/flower_rho256_hgradient.h5  # 27D (V2.1/V3 共用)
+python -m testdata_generate --rho-model 256 --scale-h --feature-mode phi9_center_normal --output test_data/flower_rho256_hcenter_normal.h5  # 11D
+python -m testdata_generate --rho-model 256 --scale-h --feature-mode phi9_cross_normal --output test_data/flower_rho256_hcross_normal.h5  # 19D
+# These CLI examples retain the generic Flower grid defaults described above.
+# Paper comparisons must reuse the paper's exact h=1/256 cell-centre grid and
+# frozen-phi0 reinitialization configuration, changing only feature_mode/model.
 ```
 
 ```bash
@@ -101,3 +135,14 @@ tmux new -s 1024
 tmux attach -t 1024
 # detach: Ctrl+b d
 ```
+
+## Strict 3×3 local normals (15D, V6)
+
+```bash
+python -m train_generate.rebuild_local --source dataset/32/32_cellcenter_hcross_normal.h5 --output dataset/32/32_cellcenter_hlocal_normal.h5
+python -m model.train --dataset-output dataset/32/32_cellcenter_hlocal_normal.h5 --output-model out/32/cell_32_hlocal_normal.pt --normalization-csv out/32/cell_32_hlocal_normal_phi9.csv
+# N64: replace both occurrences of 32 in each path with 64.
+python tem/local_normal_comparison/compare.py
+```
+
+T

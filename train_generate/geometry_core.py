@@ -20,8 +20,13 @@ TWO_PI = float(2.0 * np.pi)
 
 
 @lru_cache(maxsize=None)
-def build_grid(rho: int) -> tuple[np.ndarray, np.ndarray]:
-    x = np.linspace(0.0, 1.0, int(rho), dtype=np.float64)
+def build_grid(rho: int, grid_convention: str = "endpoint_nodes") -> tuple[np.ndarray, np.ndarray]:
+    if grid_convention == "cell_count_cell_centres":
+        x = (np.arange(int(rho), dtype=np.float64) + 0.5) / int(rho)
+    elif grid_convention == "endpoint_nodes":
+        x = np.linspace(0.0, 1.0, int(rho), dtype=np.float64)
+    else:
+        raise ValueError(f"Unknown grid_convention {grid_convention!r}")
     return np.meshgrid(x, x, indexing="ij")
 
 

@@ -13,6 +13,7 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from train_generate.features import local_normal_features, FEATURE_MODES, feature_contract, resolve_feature_mode
 from testdata_generate.config import (
     DATASET_SCHEMA_VERSION,
     DEFAULT_CUSTOM_DATASET_NAME,
@@ -162,6 +163,7 @@ def _append_case_iter(
     rho_model: int,
     scale_h: bool = False,
     augment_gradient: bool = False,
+    feature_mode: str | None = None,
 ) -> int:
     indices = interface_indices(phi)
     if indices.size == 0:
@@ -173,9 +175,14 @@ def _append_case_iter(
     theta_proj = find_projection_theta(xy, a, b, p)
     count = indices.shape[0]
     phi9, features = build_raw_features(phi, indices, scale_h=scale_h, h=h)
-    if augment_gradient:
-        grad9 = extract_grad9(phi, indices)  # (N, 9, 2)
-        # Layout B: [phi9_features (9) | nx9 (9) | ny9 (9)] → 27D
+    if feature_mode == "phi9_local_normal":
+        features = np.concatenate([features, local_normal_features(phi9)], axis=1)
+    elif resolve_feature_mode(feature_mode, augment_gradient) != "phi9":
+        grad9 = extract_grad9(
+            phi, indices, center_only=feature_mode == "phi9_center_normal",
+            cross_only=feature_mode == "phi9_cross_normal"
+        )
+        # Layout: [phi9_features | nx (9, 5 or 1) | ny (9, 5 or 1)].
         features = np.concatenate(
             [features, grad9[:, :, 0], grad9[:, :, 1]], axis=1
         ).astype(np.float32, copy=False)
@@ -275,7 +282,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
         f"sign_mode={cfg.sign_mode} cfl={cfg.cfl} "
         f"eps_sign_factor={cfg.eps_sign_factor} RK{cfg.time_order} WENO{cfg.space_order}"
     )
-    feature_order = "phi9+nx9+ny9" if cfg.augment_gradient else "phi9"
+    feature_order = feature_contract(cfg.feature_mode, cfg.augment_gradient)[2]
     print(f"[testdata_generate] feature_order={feature_order} output={output_path}")
 
     for case_id, scenario in enumerate(cfg.scenarios):
@@ -302,6 +309,7 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 rho_model=scenario.rho_model,
                 scale_h=bool(cfg.scale_h),
                 augment_gradient=bool(cfg.augment_gradient),
+                feature_mode=cfg.feature_mode,
             )
             counts[f"{scenario.exp_id}/iter_0"] = count
             print(f"    iter= 0 samples={count}")
@@ -331,11 +339,12 @@ def generate_test_data(config: TestDataConfig | None = None, *, output: str | Pa
                 rho_model=scenario.rho_model,
                 scale_h=bool(cfg.scale_h),
                 augment_gradient=bool(cfg.augment_gradient),
+                feature_mode=cfg.feature_mode,
             )
             counts[f"{scenario.exp_id}/iter_{iteration}"] = count
             print(f"    iter={iteration:>2d} samples={count}")
 
-    feature_dim = 27 if cfg.augment_gradient else 9
+    feature_dim = feature_contract(cfg.feature_mode, cfg.augment_gradient)[1]
     arrays = _concat_store(store, feature_dim=feature_dim)
     _validate_arrays(arrays, cfg)
     _write_hdf5(output_path, arrays, cfg, counts)
@@ -347,8 +356,8 @@ def _validate_arrays(arrays: dict[str, np.ndarray], cfg: TestDataConfig) -> None
     n = arrays["features"].shape[0]
     if arrays["phi9"].ndim != 2 or arrays["phi9"].shape[1] != 9:
         raise ValueError(f"phi9 must have shape (N, 9), got {arrays['phi9'].shape}.")
-    if arrays["features"].ndim != 2 or arrays["features"].shape[1] not in (9, 27):
-        raise ValueError(f"features must have shape (N, 9) or (N, 27), got {arrays['features'].shape}.")
+    if arrays["features"].ndim != 2 or arrays["features"].shape[1] not in (9, 11, 15, 19, 27):
+        raise ValueError(f"features must have shape (N, 9), (N, 11), (N, 15), (N, 19), or (N, 27), got {arrays['features'].shape}.")
     if arrays["xy"].ndim != 2 or arrays["xy"].shape[1] != 2:
         raise ValueError(f"xy must have shape (N, 2), got {arrays['xy'].shape}.")
     for key, value in arrays.items():
@@ -390,12 +399,23 @@ def _feature_version_attrs(raw_feature_dim: int, scale_h: bool) -> dict[str, Any
         feature_version = 1
         feature_order = "phi9"
         feature_transform = "phi9_over_h" if scale_h else "phi9"
+    elif raw_feature_dim == 11:
+        feature_version = 4
+        feature_order = "phi9+nx_center+ny_center"
+        feature_transform = "phi9nx_centerny_center_over_h" if scale_h else feature_order
+    elif raw_feature_dim == 15:
+        feature_version, _, feature_order = feature_contract("phi9_local_normal")
+        feature_transform = feature_order + ("_over_h" if scale_h else "")
+    elif raw_feature_dim == 19:
+        feature_version = 5
+        feature_order = "phi9+nx_cross5+ny_cross5"
+        feature_transform = "phi9nx_cross5ny_cross5_over_h" if scale_h else feature_order
     elif raw_feature_dim == 27:
         feature_version = 2
         feature_order = "phi9+nx9+ny9"
         feature_transform = "phi9nx9ny9_over_h" if scale_h else "phi9+nx9+ny9"
     else:
-        raise ValueError(f"Unexpected feature dim {raw_feature_dim}; expected 9 or 27.")
+        raise ValueError(f"Unexpected feature dim {raw_feature_dim}; expected 9, 11, 15, 19, or 27.")
     return {
         "feature_version": feature_version,
         "feature_dim_raw": raw_feature_dim,
@@ -430,6 +450,7 @@ def _write_hdf5(
         "stencil_encoding": cfg.stencil_encoding,
         "target_rule": cfg.target_rule,
         "augment_gradient": bool(cfg.augment_gradient),
+        "feature_mode": resolve_feature_mode(cfg.feature_mode, cfg.augment_gradient),
         **_feature_version_attrs(arrays["features"].shape[1], cfg.scale_h),
         "method_code": cfg.method_code,
         "output_root": str(cfg.output_dir),
@@ -500,6 +521,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "yielding 27D features [phi9 | nx9 | ny9]."
         ),
     )
+    parser.add_argument("--feature-mode", choices=FEATURE_MODES, default=None,
+                        help="Input feature mode; overrides --augment-gradient when specified.")
     return parser
 
 
@@ -512,6 +535,7 @@ def main() -> None:
         requested_rho_model=int(args.rho_model),
         scale_h=bool(args.scale_h),
         augment_gradient=bool(args.augment_gradient),
+        feature_mode=args.feature_mode,
     )
     output = Path(args.output) if args.output else None
     generate_test_data(cfg, output=output)

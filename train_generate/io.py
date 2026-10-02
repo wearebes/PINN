@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 
 from .config import DataConfig, GenerationConfig, default_dataset_name
+from .features import resolve_feature_mode
 
 
 DATASET_FORMAT_VERSION = 7
@@ -133,12 +134,21 @@ def save_training_dataset_hdf5(
         if raw_feature_dim == 9:
             _feature_version = 1
             _feature_order = "phi9"
+        elif raw_feature_dim == 11:
+            _feature_version = 4
+            _feature_order = "phi9+nx_center+ny_center"
+        elif raw_feature_dim == 15:
+            _feature_version = 6
+            _feature_order = "phi9+nx_center+ny_center+ny_left+ny_right+nx_top+nx_bottom"
+        elif raw_feature_dim == 19:
+            _feature_version = 5
+            _feature_order = "phi9+nx_cross5+ny_cross5"
         elif raw_feature_dim == 27:
             _feature_version = 2
             _feature_order = "phi9+nx9+ny9"
         else:
             raise ValueError(
-                f"Only 9D (V1) and 27D (V2) feature dimensions are supported; "
+                f"Only 15D (V6 local normals), 9D (V1), 11D (V4), 19D (V5), and 27D (V2) feature dimensions are supported; "
                 f"got raw_feature_dim={raw_feature_dim}."
             )
         handle.attrs["dataset_format_version"] = DATASET_FORMAT_VERSION
@@ -146,10 +156,16 @@ def save_training_dataset_hdf5(
         handle.attrs["variations"] = int(data_cfg.variations)
         handle.attrs["initial_field_types_json"] = json.dumps(list(data_cfg.initial_field_types))
         handle.attrs["augment_sign_flip"] = bool(data_cfg.augment_sign_flip)
+        handle.attrs["grid_convention"] = data_cfg.grid_convention
+        if data_cfg.grid_convention == "cell_count_cell_centres" and len(data_cfg.resolutions) == 1:
+            handle.attrs["n_cells"] = int(data_cfg.resolutions[0])
+        handle.attrs["feature_mode"] = resolve_feature_mode(data_cfg.feature_mode, data_cfg.augment_gradient)
         handle.attrs["augment_gradient"] = bool(data_cfg.augment_gradient)
         handle.attrs["feature_version"] = _feature_version
         handle.attrs["feature_dim_raw"] = raw_feature_dim
         handle.attrs["feature_order"] = _feature_order
+        if raw_feature_dim == 15:
+            handle.attrs["normal_discretization"] = "strict_phi9_centered_tangent_first_order_inward"
         handle.attrs["shape_types_json"] = json.dumps(list(data_cfg.shape_types))
         handle.attrs["train_fraction"] = float(data_cfg.train_fraction)
         handle.attrs["val_fraction"] = float(data_cfg.val_fraction)
@@ -178,6 +194,14 @@ def save_training_dataset_hdf5(
             _ft = "phi9nx9ny9_over_h"  if _grad else "phi9_over_h"
         else:
             _ft = "phi9+nx9+ny9"       if _grad else "phi9"
+        if raw_feature_dim == 11:
+            _ft = ("phi9nx_centerny_center_over_ah" if _has_alpha else
+                   "phi9nx_centerny_center_over_h" if _sh else _feature_order)
+        if raw_feature_dim == 19:
+            _ft = ("phi9nx_cross5ny_cross5_over_ah" if _has_alpha else
+                   "phi9nx_cross5ny_cross5_over_h" if _sh else _feature_order)
+        if raw_feature_dim == 15:
+            _ft = _feature_order + ("_over_ah" if _has_alpha else "_over_h" if _sh else "")
         handle.attrs["feature_transform"] = _ft
         handle.attrs["augment_scale_alpha_json"] = json.dumps(list(data_cfg.augment_scale_alpha))
         handle.create_dataset("resolutions", data=np.asarray(data_cfg.resolutions, dtype=np.int32))
@@ -251,6 +275,8 @@ def build_dataset_summary_from_hdf5(dataset_path: str | Path) -> dict[str, Any]:
                     "feature_version": int(handle.attrs.get("feature_version", 1)),
                     "feature_dim_raw": int(handle.attrs.get("feature_dim_raw", 9)),
                     "feature_order": str(handle.attrs.get("feature_order", "phi9")),
+                    "feature_mode": str(handle.attrs.get("feature_mode", "")),
+                    "grid_convention": str(handle.attrs.get("grid_convention", "endpoint_nodes")),
                     "shape_types": json.loads(str(handle.attrs.get("shape_types_json", '["circle"]'))),
                     "train_fraction": float(handle.attrs.get("train_fraction", 0.0)),
                     "val_fraction": float(handle.attrs.get("val_fraction", 0.0)),
@@ -325,13 +351,18 @@ def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
         and raw_feature_dim == 27
         and feature_order == "pca18(phi9+nx9+ny9)"
     )
-    if not (_v1_ok or _v2_ok or _v3_ok):
+    _v4_ok = feature_version == 4 and raw_feature_dim == 11 and feature_order == "phi9+nx_center+ny_center"
+    _v5_ok = feature_version == 5 and raw_feature_dim == 19 and feature_order == "phi9+nx_cross5+ny_cross5"
+    _v6_ok = feature_version == 6 and raw_feature_dim == 15 and feature_order == "phi9+nx_center+ny_center+ny_left+ny_right+nx_top+nx_bottom"
+    if not (_v1_ok or _v2_ok or _v3_ok or _v4_ok or _v5_ok or _v6_ok):
         raise ValueError(
             f"Dataset {h5_path.resolve()} has an unsupported feature contract: "
             f"feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
             "Supported: V1 (version=1, dim=9, order='phi9'), "
             "V2 (version=2, dim=27, order='phi9+nx9+ny9'), or "
             "V3 (version=3, dim_raw=27, order='pca18(phi9+nx9+ny9)'). "
+            "V4 (version=4, dim=11, order='phi9+nx_center+ny_center'). "
+            "V5 (version=5, dim=19, order='phi9+nx_cross5+ny_cross5'). "
             "Regenerate the dataset with the current train_generate pipeline."
         )
     # V3 stores 18D PCA features; feature_dim_raw (27) is provenance only.
@@ -349,6 +380,9 @@ def _parse_hdf5_metadata(handle: Any, h5_path: Path) -> dict[str, Any]:
         initial_field_types=tuple(json.loads(str(raw_initial_field_types))),
         augment_sign_flip=bool(handle.attrs.get("augment_sign_flip", False)),
         augment_gradient=bool(handle.attrs.get("augment_gradient", False)),
+        grid_convention=str(handle.attrs.get("grid_convention", "endpoint_nodes")),
+        feature_mode=(str(handle.attrs["feature_mode"]) if "feature_mode" in handle.attrs
+                      else "phi9_local_normal" if _v6_ok else "phi9_center_normal" if _v4_ok else "phi9_cross_normal" if _v5_ok else None),
         shape_types=tuple(json.loads(str(raw_shape_types))),
         train_fraction=float(handle.attrs.get("train_fraction", DataConfig().train_fraction)),
         val_fraction=float(handle.attrs.get("val_fraction", DataConfig().val_fraction)),

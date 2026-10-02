@@ -145,9 +145,9 @@ def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarra
             feature_counts.add(int(row["feature_count"]))
     mean = np.asarray(means, dtype=np.float32)
     std = np.asarray(stds, dtype=np.float32)
-    if mean.ndim != 1 or mean.size not in (9, 27):
+    if mean.ndim != 1 or mean.size not in (9, 11, 15, 19, 27):
         raise ValueError(
-            f"Normalization CSV {csv_path.resolve()} must describe 9 (V1) or 27 (V2) features, "
+            f"Normalization CSV {csv_path.resolve()} must describe 15 (V6), 9 (V1), 11 (V4), 19 (V5), or 27 (V2) features, "
             f"got {mean.size} entries."
         )
     if np.any(~np.isfinite(mean)) or np.any(~np.isfinite(std)):
@@ -156,9 +156,9 @@ def load_phi9_normalization_csv(path: str | Path) -> tuple[np.ndarray, np.ndarra
         raise ValueError(f"Normalization CSV {csv_path.resolve()} contains non-positive std values.")
     if source_splits != {"train"}:
         raise ValueError(f"Normalization CSV {csv_path.resolve()} must record source_split=train, got {sorted(source_splits)}.")
-    if feature_counts not in ({9}, {27}):
+    if feature_counts not in ({9}, {11}, {15}, {19}, {27}):
         raise ValueError(
-            f"Normalization CSV {csv_path.resolve()} must record feature_count in {{9, 27}}, got {sorted(feature_counts)}."
+            f"Normalization CSV {csv_path.resolve()} must record feature_count in {{9, 11, 15, 19, 27}}, got {sorted(feature_counts)}."
         )
     return mean, std
 
@@ -169,10 +169,16 @@ def build_legacy_feature_transform(mean: np.ndarray, std: np.ndarray, *, dataset
     raw_dim = int(mean_arr.size)
     if raw_dim == 9:
         fv, fo = 1, "phi9"
+    elif raw_dim == 11:
+        fv, fo = 4, "phi9+nx_center+ny_center"
+    elif raw_dim == 15:
+        fv, fo = 6, "phi9+nx_center+ny_center+ny_left+ny_right+nx_top+nx_bottom"
+    elif raw_dim == 19:
+        fv, fo = 5, "phi9+nx_cross5+ny_cross5"
     elif raw_dim == 27:
         fv, fo = 2, "phi9+nx9+ny9"
     else:
-        raise ValueError(f"build_legacy_feature_transform: expected 9 (V1) or 27 (V2) entries, got {raw_dim}.")
+        raise ValueError(f"build_legacy_feature_transform: expected 15 (V6), 9 (V1), 11 (V4), 19 (V5), or 27 (V2) entries, got {raw_dim}.")
     return {
         "transform_kind": "standardize",
         "feature_version": fv,
@@ -280,9 +286,32 @@ def validate_feature_transform(transform: dict[str, Any]) -> dict[str, Any]:
         and legacy_components.size == 0
         and legacy_eigenvalues.size == 0
     )
-    if not (_v1_ok or _v2_ok):
+    _v4_ok = (
+        out["transform_kind"] == "standardize"
+        and out["feature_version"] == 4
+        and out["raw_feature_dim"] == 11
+        and out["output_dim"] == 11
+        and out["feature_order"] == "phi9+nx_center+ny_center"
+        and legacy_components.size == 0
+        and legacy_eigenvalues.size == 0
+    )
+    _v5_ok = (
+        out["transform_kind"] == "standardize"
+        and out["feature_version"] == 5
+        and out["raw_feature_dim"] == 19
+        and out["output_dim"] == 19
+        and out["feature_order"] == "phi9+nx_cross5+ny_cross5"
+        and legacy_components.size == 0
+        and legacy_eigenvalues.size == 0
+    )
+    _v6_ok = (out["transform_kind"] == "standardize"
+        and out["feature_version"] == 6 and out["raw_feature_dim"] == 15
+        and out["output_dim"] == 15
+        and out["feature_order"] == "phi9+nx_center+ny_center+ny_left+ny_right+nx_top+nx_bottom"
+        and legacy_components.size == 0 and legacy_eigenvalues.size == 0)
+    if not (_v1_ok or _v2_ok or _v4_ok or _v5_ok or _v6_ok):
         raise ValueError(
-            "Only V1 (9D phi9 standardization), V2 (27D phi9+nx9+ny9 standardization), and "
+            "Only V6 (15D local normals), V5 (19D cross normals), V4 (11D center normals), V1 (9D phi9 standardization), V2 (27D phi9+nx9+ny9 standardization), and "
             "V3 (standardize_pca18: 27D -> 18D) transforms are supported."
         )
     return {
@@ -312,9 +341,9 @@ def fit_feature_transform(
     if np.any(~np.isfinite(features)):
         raise ValueError("Training features contain non-finite values; cannot fit feature transform.")
     raw_dim = int(features.shape[1])
-    if raw_dim not in (9, 27):
+    if raw_dim not in (9, 11, 15, 19, 27):
         raise ValueError(
-            f"Only 9D (V1 phi9) and 27D (V2 phi9+nx9+ny9) feature dimensions are supported "
+            f"Only 15D (V6 local normals), 19D (V5 cross normals), 11D (V4 center normals), 9D (V1 phi9), and 27D (V2 phi9+nx9+ny9) feature dimensions are supported "
             f"for fitting the transform. Got raw_feature_dim={raw_dim}."
         )
     mean = np.mean(features, axis=0, dtype=np.float64).astype(np.float32)
@@ -349,7 +378,7 @@ def save_feature_stats(path: str | Path, *, transform: dict[str, Any], dataset_p
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.suffix.lower() != ".csv":
         raise ValueError(
-            f"Normalization output must be a CSV file for the V1/V2 pipeline, got {output_path.resolve()}."
+            f"Normalization output must be a CSV file for the V1/V2/V4 pipeline, got {output_path.resolve()}."
         )
     return save_phi9_normalization_csv(output_path, mean=state["mean"], std=state["std"], dataset_path=dataset_path)
 
@@ -368,7 +397,7 @@ def load_feature_transform(path: str | Path) -> dict[str, Any]:
         return build_legacy_feature_transform(mean, std)
     raise ValueError(
         f"Unsupported feature-transform sidecar {feature_path.resolve()}. "
-        "Expected .csv (V1/V2 standardization) or .npz (V3 PCA-18)."
+        "Expected .csv (V1/V2/V4 standardization) or .npz (V3 PCA-18)."
     )
 
 

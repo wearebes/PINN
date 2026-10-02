@@ -215,11 +215,14 @@ def load_flower_dataset(path: str | Path) -> dict[str, Any]:
     feature_order = str(attrs.get("feature_order", "phi9"))
     _v1_ok = feature_version == 1 and raw_feature_dim == 9 and feature_order == "phi9"
     _v2_ok = feature_version == 2 and raw_feature_dim == 27 and feature_order == "phi9+nx9+ny9"
-    if not (_v1_ok or _v2_ok):
+    _v4_ok = feature_version == 4 and raw_feature_dim == 11 and feature_order == "phi9+nx_center+ny_center"
+    _v5_ok = feature_version == 5 and raw_feature_dim == 19 and feature_order == "phi9+nx_cross5+ny_cross5"
+    _v6_ok = feature_version == 6 and raw_feature_dim == 15 and feature_order == "phi9+nx_center+ny_center+ny_left+ny_right+nx_top+nx_bottom"
+    if not (_v1_ok or _v2_ok or _v4_ok or _v5_ok or _v6_ok):
         raise ValueError(
             f"Flower dataset {dataset_path.resolve()} has unsupported feature metadata. "
             f"Got feature_version={feature_version}, feature_dim_raw={raw_feature_dim}, feature_order={feature_order!r}. "
-            "Expected V1 (feature_version=1, feature_dim_raw=9, feature_order='phi9') or "
+            "Expected V5 (version=5, dim=19, order='phi9+nx_cross5+ny_cross5'), V4 (version=4, dim=11, order='phi9+nx_center+ny_center'), V1 (feature_version=1, feature_dim_raw=9, feature_order='phi9') or "
             "V2 (feature_version=2, feature_dim_raw=27, feature_order='phi9+nx9+ny9')."
         )
     if phi9.ndim != 2 or phi9.shape[1] != 9:

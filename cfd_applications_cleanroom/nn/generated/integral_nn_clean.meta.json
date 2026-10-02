@@ -1,8 +1,0 @@
-{
-  "diff_path": "cfd_applications_cleanroom/nn/generated/integral_nn_clean.diff",
-  "official_integral_h_hash_after": "234d407ac3012a9be14e91747fae10dfe0a2c4677c5ca5a8bb93ae0d3511a395",
-  "official_integral_h_hash_before": "234d407ac3012a9be14e91747fae10dfe0a2c4677c5ca5a8bb93ae0d3511a395",
-  "overlay_contains_no_official_path_write": true,
-  "overlay_path": "cfd_applications_cleanroom/nn/generated/integral_nn_clean.h",
-  "source_path": "cfd_applications_cleanroom/vendor/basilisk_clean/src/integral.h"
-}

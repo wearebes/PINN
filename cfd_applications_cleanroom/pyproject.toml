@@ -1,8 +1,0 @@
-[project]
-name = "cfd-applications-cleanroom"
-version = "0.1.0"
-description = "Cleanroom CFD application evidence route for PINN curvature research"
-requires-python = ">=3.10"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

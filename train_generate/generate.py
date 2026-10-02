@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from train_generate.config import DataConfig, GenerationConfig
+from train_generate.features import local_normal_features, FEATURE_MODES, feature_contract
 from train_generate.geometry_core import (
     STENCIL_OFFSETS,
     build_circle_nonsdf,
@@ -35,14 +36,14 @@ SUPPORTED_SHAPE_TYPES = {"circle", "ellipse"}
 
 
 class CircleGeometryGenerator:
-    def __init__(self, resolution_rho: int, seed: int = 42, variations: int = 5):
+    def __init__(self, resolution_rho: int, seed: int = 42, variations: int = 5, grid_convention: str = "endpoint_nodes"):
         self.rho = int(resolution_rho)
         self.global_seed = int(seed)
         self.variations = int(variations)
-        self.h = 1.0 / (self.rho - 1)
+        self.h = 1.0 / (self.rho if grid_convention == "cell_count_cell_centres" else self.rho - 1)
         self.r_min = 1.6 * self.h
         self.r_max = 0.5 - 2.0 * self.h
-        self.num_radii = int(np.floor((self.rho - 8.2) / 2.0)) + 1
+        self.num_radii = int(np.floor((self.rho + (grid_convention == "cell_count_cell_centres") - 8.2) / 2.0)) + 1
         if self.variations < 1:
             raise ValueError("variations must be >= 1")
         if self.num_radii < 1 or self.r_min >= self.r_max:
@@ -92,7 +93,7 @@ class EllipseGeometryGenerator:
     def __init__(self, resolution_rho: int, data_config: DataConfig):
         self.rho = int(resolution_rho)
         self.global_seed = int(data_config.geometry_seed)
-        self.h = 1.0 / (self.rho - 1)
+        self.h = 1.0 / (self.rho if data_config.grid_convention == "cell_count_cell_centres" else self.rho - 1)
         self.num_a = int(data_config.ellipse_num_a)
         self.variations_per_a = int(data_config.ellipse_variations_per_a)
         self.axis_ratio_min = float(data_config.ellipse_axis_ratio_min)
@@ -174,7 +175,9 @@ def extract_phi9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
     return np.asarray(phi[row_idx, col_idx], dtype=np.float32)
 
 
-def extract_grad9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
+def extract_grad9(
+    phi: np.ndarray, indices: np.ndarray, *, center_only: bool = False, cross_only: bool = False
+) -> np.ndarray:
     """Compute normalised gradient direction at each of the 9 stencil positions.
 
     For every interface node and every stencil position k, uses central differences
@@ -186,19 +189,27 @@ def extract_grad9(phi: np.ndarray, indices: np.ndarray) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray, shape (N, 9, 2), dtype float32
+    np.ndarray, shape (N, 9, 2), (N, 1, 2) with center_only=True,
+        or (N, 5, 2) with cross_only=True, dtype float32.
+        Cross positions retain canonical stencil order: up, left, center, right, down.
         result[:, k, 0] = nx_k  (normalised x-component of gradient at stencil point k)
         result[:, k, 1] = ny_k  (normalised y-component of gradient at stencil point k)
     """
+    if center_only and cross_only:
+        raise ValueError("Choose either center_only or cross_only, not both.")
+    offsets = STENCIL_OFFSETS
+    if center_only:
+        offsets = offsets[np.all(offsets == 0, axis=1)]
+    elif cross_only:
+        offsets = offsets[np.abs(offsets).sum(axis=1) <= 1]
     if indices.size == 0:
-        return np.zeros((0, 9, 2), dtype=np.float32)
+        return np.zeros((0, len(offsets), 2), dtype=np.float32)
     rows = indices[:, 0]
     cols = indices[:, 1]
     nrows, ncols = phi.shape
-    grad9 = np.empty((len(rows), 9, 2), dtype=np.float32)
-    for k in range(9):
-        dr = int(STENCIL_OFFSETS[k, 0])
-        dc = int(STENCIL_OFFSETS[k, 1])
+    grad9 = np.empty((len(rows), len(offsets), 2), dtype=np.float32)
+    for k, (dr, dc) in enumerate(offsets):
+        dr, dc = int(dr), int(dc)
         rk = rows + dr   # row of stencil point k for every node
         ck = cols + dc   # col of stencil point k for every node
         assert np.all(rk - 1 >= 0) and np.all(rk + 1 < nrows), (
@@ -287,10 +298,17 @@ def generate_blueprints(data_config: DataConfig) -> list[dict[str, Any]]:
                     resolution_rho=int(rho),
                     seed=data_config.geometry_seed,
                     variations=data_config.variations,
+                    grid_convention=data_config.grid_convention,
                 ).generate_blueprints()
             )
         if "ellipse" in data_config.shape_types:
             blueprints.extend(EllipseGeometryGenerator(resolution_rho=int(rho), data_config=data_config).generate_blueprints())
+    if data_config.grid_convention == "cell_count_cell_centres":
+        for blueprint in blueprints:
+            meta = blueprint["meta"]
+            meta["blueprint_id"] = meta["blueprint_id"].replace("_rho", "_cells")
+            meta["n_cells"] = meta["resolution"]
+            meta["grid_convention"] = data_config.grid_convention
     return blueprints
 
 
@@ -434,7 +452,7 @@ def sample_blueprint(
 ) -> list[dict[str, np.ndarray]]:
     samples: list[dict[str, np.ndarray]] = []
     rho = int(blueprint["meta"]["resolution"])
-    X, Y = build_grid(rho)
+    X, Y = build_grid(rho, data_config.grid_convention)
     h_blueprint = float(blueprint["params"]["h"])
     alpha_list = list(data_config.augment_scale_alpha)  # already normalized by generate_training_splits
 
@@ -449,7 +467,12 @@ def sample_blueprint(
 
         phi9 = extract_phi9(phi0, indices)
         base_hkappa = compute_hkappa_targets(blueprint, indices, data_config=data_config, X=X, Y=Y)
-        grad9 = extract_grad9(phi0, indices) if data_config.augment_gradient else None
+        grad9 = extract_grad9(
+            phi0, indices, center_only=data_config.feature_mode == "phi9_center_normal",
+            cross_only=data_config.feature_mode == "phi9_cross_normal"
+        ) if data_config.augment_gradient and data_config.feature_mode != "phi9_local_normal" else None
+        normal_features = (local_normal_features(phi9) if data_config.feature_mode == "phi9_local_normal"
+                           else np.concatenate([grad9[:,:,0], grad9[:,:,1]], axis=1) if grad9 is not None else None)
 
         def _append(feats, hkappa, alpha_arr=None, *, _phi9=phi9):
             entry: dict[str, np.ndarray] = {"phi9": _phi9, "features": feats, "hkappa_target": hkappa}
@@ -466,18 +489,18 @@ def sample_blueprint(
             for alpha in alpha_list:
                 sf = np.float32(float(alpha) * h_blueprint)
                 feats = (phi9 / sf).astype(np.float32, copy=False)
-                if grad9 is not None:
+                if normal_features is not None:
                     feats = np.concatenate(
-                        [feats, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+                        [feats, normal_features], axis=1
                     ).astype(np.float32, copy=False)
                 hkappa = (base_hkappa * float(alpha)).astype(np.float32, copy=False)
                 alpha_arr = np.full(len(phi9), float(alpha), dtype=np.float32)
                 _append(feats, hkappa, alpha_arr)
         else:
             _, feats = build_raw_features(phi0, indices, scale_h=bool(data_config.scale_h), h=h_blueprint)
-            if grad9 is not None:
+            if normal_features is not None:
                 feats = np.concatenate(
-                    [feats, grad9[:, :, 0], grad9[:, :, 1]], axis=1
+                    [feats, normal_features], axis=1
                 ).astype(np.float32, copy=False)
             _append(feats, base_hkappa)
 
@@ -536,6 +559,8 @@ def generate_training_splits(
         initial_field_types=normalize_initial_field_types(data_config.initial_field_types),
         augment_sign_flip=bool(data_config.augment_sign_flip),
         augment_gradient=bool(data_config.augment_gradient),
+        feature_mode=data_config.feature_mode,
+        grid_convention=data_config.grid_convention,
         train_fraction=float(data_config.train_fraction),
         val_fraction=float(data_config.val_fraction),
         shape_types=normalize_shape_types(data_config.shape_types),
@@ -585,7 +610,7 @@ def generate_training_splits(
                 progress.update(1)
     progress.close()
 
-    feature_dim = 27 if data_config.augment_gradient else 9
+    feature_dim = feature_contract(data_config.feature_mode, data_config.augment_gradient)[1]
     splits = {name: concat_split_samples(items, feature_dim=feature_dim) for name, items in split_samples.items()}
     sizes = {name: int(split["phi9"].shape[0]) for name, split in splits.items()}
     split_shape_blueprint_counts = {
@@ -662,6 +687,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Gradient direction also negates under sign-flip augmentation."
         ),
     )
+    parser.add_argument("--grid-convention", choices=("endpoint_nodes", "cell_count_cell_centres"),
+                        default=data_cfg.grid_convention)
+    parser.add_argument("--feature-mode", choices=FEATURE_MODES, default=None,
+                        help="Input feature mode; overrides --augment-gradient when specified.")
     parser.add_argument("--shape-types", type=str, default=",".join(data_cfg.shape_types))
     parser.add_argument("--train-fraction", type=float, default=data_cfg.train_fraction)
     parser.add_argument("--val-fraction", type=float, default=data_cfg.val_fraction)
@@ -707,6 +736,8 @@ def main() -> None:
         initial_field_types=normalize_initial_field_types(_parse_str_tuple(str(args.initial_field_types))),
         augment_sign_flip=bool(args.augment_sign_flip),
         augment_gradient=bool(args.augment_gradient),
+        feature_mode=args.feature_mode,
+        grid_convention=args.grid_convention,
         train_fraction=args.train_fraction,
         val_fraction=args.val_fraction,
         shape_types=normalize_shape_types(_parse_str_tuple(str(args.shape_types))),

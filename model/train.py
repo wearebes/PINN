@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
 import time
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -32,31 +31,11 @@ from model.config import (
     ModelType,
     TrainConfig,
     create_train_config,
-    default_dataset_path,
-    default_output_model_path,
 )
-from model.model import count_parameters, create_loss_fn, create_model, create_optimizer
+from model.model import HKappaCNN, HKappaStencilNet
 from train_generate.io import load_training_arrays_from_hdf5
 
 TRAIN_SPLIT_NAMES = ("train", "val")
-
-# argparse attribute names that differ from their TrainConfig field names
-_CLI_RENAMES: dict[str, str] = {
-    "dataset_output": "dataset_path",
-    "output_model":   "output_model_path",
-}
-
-# ── Runtime context
-
-@dataclass
-class TrainContext:
-    device:              torch.device
-    amp_enabled:         bool
-    scaler:              torch.amp.GradScaler
-    compile_enabled:     bool
-    compile_mode:        str
-    profile_cuda_timing: bool
-    phase_log_path:      Path | None = None
 
 # ── Phase / event logging
 
@@ -68,14 +47,6 @@ def emit_phase_event(path: Path | None, event: str, **payload: Any) -> None:
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=True) + "\n")
 
-# ── Model unwrapping  (compiled models have _orig_mod)
-
-def unwrap_model(model: nn.Module) -> nn.Module:
-    unwrapped = model
-    while hasattr(unwrapped, "_orig_mod"):
-        unwrapped = getattr(unwrapped, "_orig_mod")
-    return unwrapped
-
 # ── Data validation
 
 def _validate_split(split_name: str, split: dict[str, Any], *, require_phi9: bool = True) -> None:
@@ -86,9 +57,9 @@ def _validate_split(split_name: str, split: dict[str, Any], *, require_phi9: boo
     if require_phi9 and (split["phi9"].ndim != 2 or split["phi9"].shape[1] != 9):
         raise ValueError(f"Split {split_name!r} phi9 must have shape (N, 9), got {split['phi9'].shape}.")
     feat_dim = int(split["features"].shape[1]) if split["features"].ndim == 2 else -1
-    if split["features"].ndim != 2 or feat_dim not in (9, 18, 27):
+    if split["features"].ndim != 2 or feat_dim not in (9, 11, 15, 18, 19, 27):
         raise ValueError(
-            f"Split {split_name!r} features must have shape (N, 9), (N, 18), or (N, 27), got {split['features'].shape}."
+            f"Split {split_name!r} features must have shape (N, 9), (N, 11), (N, 15), (N, 18), (N, 19), or (N, 27), got {split['features'].shape}."
         )
     n = int(split["features"].shape[0])
     if n == 0:
@@ -117,187 +88,46 @@ def transform_dataset_bundle(bundle: dict[str, Any], *, feature_transform: dict[
     sizes = {name: int(s["features"].shape[0]) for name, s in splits.items()}
     return {**bundle, "splits": splits, "sizes": sizes}
 
-# ── DataLoader construction  (data pre-loaded onto device)
+def train_loop(dataloader, model, criterion, optimizer, device, scaler):
+    model.train()
+    total_loss = torch.zeros((), device=device, dtype=torch.float32)
+    amp_enabled = scaler.is_enabled()
 
-def build_split_loaders(
-    bundle: dict[str, Any], *, device: torch.device, batch_size: int,
-) -> dict[str, DataLoader]:
-    loaders: dict[str, DataLoader] = {}
-    for name, split in bundle["splits"].items():
-        feat_t = torch.from_numpy(np.asarray(split["features"],      dtype=np.float32)).to(device)
-        tgt_t  = torch.from_numpy(np.asarray(split["hkappa_target"], dtype=np.float32)).to(device)
-        loaders[name] = DataLoader(
-            TensorDataset(feat_t, tgt_t),
-            batch_size=batch_size,
-            shuffle=(name == "train"),
-            num_workers=0,
-        )
-    return loaders
+    for features, targets in dataloader:
+        features, targets = features.to(device), targets.to(device)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
+            predictions = model(features)
+            loss = criterion(predictions, targets)
 
-# ── AMP autocast helper
-
-def make_autocast_context(*, device: torch.device, amp_enabled: bool):
-    if device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp_enabled)
-    return nullcontext()
-
-# ── Compiled-model warmup
-
-def maybe_warmup_compiled_training(
-    model: nn.Module,
-    train_loader: DataLoader,
-    *,
-    train_config: TrainConfig,
-    ctx: TrainContext,
-    loss_fn: Callable,
-) -> None:
-    if ctx.device.type != "cuda":
-        return
-    dataset = train_loader.dataset
-    assert isinstance(dataset, TensorDataset)
-    warmup_count = min(int(train_config.batch_size), len(dataset))
-    if warmup_count <= 0:
-        return
-
-    emit_phase_event(ctx.phase_log_path, "compile_warmup_begin", warmup_samples=warmup_count)
-    checkpoint_model = unwrap_model(model)
-    saved_state    = {k: v.detach().cpu().clone() for k, v in checkpoint_model.state_dict().items()}
-    warmup_opt     = create_optimizer(checkpoint_model, train_config)
-    warmup_scaler  = torch.amp.GradScaler("cuda", enabled=ctx.amp_enabled)
-
-    feat, tgt = dataset.tensors[0][:warmup_count], dataset.tensors[1][:warmup_count]
-    warmup_opt.zero_grad(set_to_none=True)
-    with make_autocast_context(device=ctx.device, amp_enabled=ctx.amp_enabled):
-        loss = loss_fn(model(feat), tgt)
-    warmup_scaler.scale(loss).backward()
-    warmup_scaler.step(warmup_opt)
-    warmup_scaler.update()
-    warmup_opt.zero_grad(set_to_none=True)
-
-    checkpoint_model.load_state_dict(saved_state)
-    if ctx.profile_cuda_timing:
-        torch.cuda.synchronize(ctx.device)
-    emit_phase_event(ctx.phase_log_path, "compile_warmup_end", warmup_samples=warmup_count)
-
-# ── Single epoch runner
-
-def run_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    *,
-    training: bool,
-    optimizer: torch.optim.Optimizer | None,
-    loss_fn: Callable,
-    ctx: TrainContext,
-    phase_name: str | None = None,
-    epoch: int | None = None,
-) -> float:
-    if training and optimizer is None:
-        raise ValueError("optimizer must be provided when training=True.")
-
-    model.train(mode=training)
-    total_loss  = torch.zeros((), device=ctx.device, dtype=torch.float32)
-    total_count = 0
-    phase_started = False
-
-    with nullcontext() if training else torch.no_grad():
-        for feat_batch, tgt_batch in loader:
-            if not phase_started and phase_name is not None and epoch is not None:
-                emit_phase_event(ctx.phase_log_path, f"{phase_name}_epoch_begin", epoch=int(epoch))
-                phase_started = True
-
-            n = int(feat_batch.shape[0])
-            if training:
-                optimizer.zero_grad(set_to_none=True)
-            with make_autocast_context(device=ctx.device, amp_enabled=ctx.amp_enabled):
-                batch_loss = loss_fn(model(feat_batch), tgt_batch)
-            if training:
-                ctx.scaler.scale(batch_loss).backward()
-                ctx.scaler.step(optimizer)
-                ctx.scaler.update()
-
-            total_loss  = total_loss + batch_loss.detach().to(torch.float32) * n
-            total_count += n
-
-    if total_count == 0:
-        raise ValueError("Encountered an empty split during training.")
-    if phase_started and phase_name is not None and epoch is not None:
-        if ctx.profile_cuda_timing and ctx.device.type == "cuda":
-            torch.cuda.synchronize(ctx.device)
-        emit_phase_event(ctx.phase_log_path, f"{phase_name}_epoch_end",
-                         epoch=int(epoch), sample_count=int(total_count))
-
-    return float((total_loss / total_count).item())
-
-# ── Core training loop
-
-def train_model(
-    model: nn.Module,
-    *,
-    loaders: dict[str, DataLoader],
-    train_config: TrainConfig,
-    model_type: str,
-    checkpoint_path: str | Path,
-    checkpoint_model: nn.Module,
-    feature_transform: dict[str, Any],
-    ctx: TrainContext,
-    loss_fn: Callable,
-    swanlab_run: Any | None = None,
-) -> tuple[nn.Module, dict[str, Any]]:
-    optimizer  = create_optimizer(checkpoint_model, train_config)
-    best_val   = float("inf")
-    best_state: dict[str, torch.Tensor] | None = None
-    best_epoch = -1
-    wait       = 0
-    history: dict[str, Any] = {
-        "train_hk": [], "val_hk": [], "best_epoch": -1,
-        "best_checkpoint_path": str(Path(checkpoint_path).resolve()),
-    }
-    epoch_kw = dict(loss_fn=loss_fn, ctx=ctx)
-
-    for epoch in range(train_config.max_epochs):
-        train_loss = run_epoch(model, loaders["train"], training=True,
-                               optimizer=optimizer, phase_name="train", epoch=epoch, **epoch_kw)
-        val_loss   = run_epoch(model, loaders["val"],   training=False,
-                               optimizer=None,      phase_name="val",   epoch=epoch, **epoch_kw)
-
-        history["train_hk"].append(train_loss)
-        history["val_hk"].append(val_loss)
-        print(f"Epoch {epoch:03d} | Train hk loss: {train_loss:.8e} | Val hk loss: {val_loss:.8e}")
-
-        if swanlab_run is not None:
-            swanlab_run.log({
-                "train/hk_loss":            train_loss,
-                "val/hk_loss":              val_loss,
-                "monitor/best_val_hk_loss": min(best_val, val_loss),
-            }, step=epoch + 1)
-
-        if val_loss < best_val:
-            best_val, best_epoch, wait = val_loss, epoch, 0
-            best_state = {k: v.detach().cpu().clone() for k, v in checkpoint_model.state_dict().items()}
-            save_checkpoint_bundle(checkpoint_model, model_type=model_type,
-                                   model_config=train_config, path=checkpoint_path,
-                                   feature_transform=feature_transform)
-            emit_phase_event(ctx.phase_log_path, "checkpoint_saved", epoch=int(epoch),
-                             checkpoint_path=str(Path(checkpoint_path).resolve()), kind="best_so_far")
+        if amp_enabled:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
         else:
-            wait += 1
-            if wait >= train_config.patience:
-                print(f"Early stopping at epoch {epoch} with patience={train_config.patience}.")
-                emit_phase_event(ctx.phase_log_path, "early_stopping",
-                                 epoch=int(epoch), patience=int(train_config.patience))
-                break
+            loss.backward()
+            optimizer.step()
 
-    if best_state is not None:
-        checkpoint_model.load_state_dict(best_state)
-        save_checkpoint_bundle(checkpoint_model, model_type=model_type,
-                               model_config=train_config, path=checkpoint_path,
-                               feature_transform=feature_transform)
-        emit_phase_event(ctx.phase_log_path, "checkpoint_saved", epoch=int(best_epoch),
-                         checkpoint_path=str(Path(checkpoint_path).resolve()), kind="final_best")
+        # Weight by sample count so a short final batch is counted correctly.
+        total_loss += loss.detach().float() * len(features)
 
-    history["best_epoch"] = best_epoch
-    return model, history
+    return (total_loss / len(dataloader.dataset)).item()
+
+
+def val_loop(dataloader, model, criterion, device, amp_enabled):
+    model.eval()
+    total_loss = torch.zeros((), device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        for features, targets in dataloader:
+            features, targets = features.to(device), targets.to(device)
+            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
+                predictions = model(features)
+                loss = criterion(predictions, targets)
+            total_loss += loss.float() * len(features)
+
+    return (total_loss / len(dataloader.dataset)).item()
+
 
 # ── Human-readable run summary
 
@@ -369,62 +199,32 @@ def setup_device(args: argparse.Namespace) -> torch.device:
     )
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
-        try:
-            torch.backends.cudnn.benchmark        = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32       = True
-        except Exception:
-            pass
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     return device
 
 def load_and_transform_dataset(
     args: argparse.Namespace, *, dataset_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    if getattr(args, "use_pca", False):
-        return _load_pca_dataset(args, dataset_path=dataset_path)
+    if args.use_pca:
+        from train_generate.pca_dataset import ensure_pca_dataset
+
+        # The PCA sidecar is already projected; do not transform it again.
+        pca_path, transform_path, feature_transform = ensure_pca_dataset(dataset_path)
+        bundle = load_training_arrays_from_hdf5(pca_path)
+        validate_training_splits(bundle)
+        return bundle, feature_transform, Path(transform_path)
     raw_bundle = load_training_arrays_from_hdf5(dataset_path)
     validate_training_splits(raw_bundle)
     feature_transform = fit_feature_transform(
         raw_bundle["splits"]["train"]["features"], dataset_path=dataset_path,
     )
-    explicit_output = getattr(args, "feature_transform", "") or args.normalization_csv
-    norm_output = Path(explicit_output) if explicit_output else normalization_csv_path(args.output_model)
+    explicit_output = args.feature_transform or args.normalization_csv
+    norm_output = Path(explicit_output) if explicit_output else normalization_csv_path(args.output_model_path)
     saved_norm_path = save_feature_stats(norm_output, transform=feature_transform, dataset_path=dataset_path)
     return transform_dataset_bundle(raw_bundle, feature_transform=feature_transform), feature_transform, saved_norm_path
 
-
-def _load_pca_dataset(
-    args: argparse.Namespace, *, dataset_path: Path,
-) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    # Offline PCA-18: features are already projected to 18D in the *_pca18.h5
-    # dataset, so we skip transform_dataset_bundle entirely. The fitted V3
-    # transform is returned for embedding into the checkpoint, and the NPZ
-    # sidecar path takes the "normalization output" slot.
-    from train_generate.pca_dataset import ensure_pca_dataset
-
-    pca_h5_path, npz_path, feature_transform = ensure_pca_dataset(dataset_path)
-    raw_bundle = load_training_arrays_from_hdf5(pca_h5_path)
-    validate_training_splits(raw_bundle)
-    return raw_bundle, feature_transform, Path(npz_path)
-
-def build_train_config_from_args(
-    args: argparse.Namespace,
-    *,
-    raw_feature_dim: int,
-    model_type: ModelType,
-    feature_transform: dict[str, Any],
-) -> TrainConfig:
-    # Auto-map: rename the 2 CLI args whose names differ from their config fields,
-    # then let create_train_config ignore unrecognised keys (e.g. disable_amp).
-    overrides = {_CLI_RENAMES.get(k, k): v for k, v in vars(args).items()}
-    overrides["dataset_path"]      = Path(overrides["dataset_path"])
-    overrides["output_model_path"] = Path(overrides["output_model_path"])
-    overrides["input_dim"]         = int(feature_transform["output_dim"])
-    overrides["raw_feature_dim"]   = raw_feature_dim
-    if overrides.get("batch_size") is None:        # keep config default when not passed
-        overrides.pop("batch_size", None)
-    overrides.pop("model_type", None)              # already passed as positional arg
-    return create_train_config(model_type, **overrides)
 
 # ── Argument parser
 
@@ -434,11 +234,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p   = argparse.ArgumentParser(description="Train the 3x3 stencil h*kappa predictor.")
     # paths
     p.add_argument("--model-type",       default="mlp",                  choices=["mlp", "cnn"])
-    p.add_argument("--dataset-output",   default=str(default_dataset_path()))
-    p.add_argument("--output-model",     default=str(default_output_model_path()))
+    p.add_argument("--dataset-output", dest="dataset_path", type=Path, default=mlp.dataset_path)
+    p.add_argument("--output-model", dest="output_model_path", type=Path, default=mlp.output_model_path)
     p.add_argument("--feature-transform", default="",
-                   help="Explicit feature-transform sidecar output (.csv for V1/V2). Supersedes --normalization-csv.")
-    p.add_argument("--normalization-csv", default="", help="Deprecated alias of --feature-transform (V1/V2 CSV only).")
+                   help="Explicit feature-transform sidecar output (.csv for non-PCA). Supersedes --normalization-csv.")
+    p.add_argument("--normalization-csv", default="", help="Deprecated alias of --feature-transform (non-PCA CSV only).")
     p.add_argument("--use-pca", action="store_true",
                    help="MLP only: train on the offline PCA-18 (V3) projection of a V2 27D dataset.")
     p.add_argument("--device",           default="")
@@ -461,7 +261,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--disable-amp",       action="store_true")
     p.add_argument("--disable-compile",   action="store_true")
     p.add_argument("--compile-mode",      default=mlp.compile_mode,
-                   choices=["none", "default", "reduce-overhead", "max-autotune"])
+                   choices=["none", "default", "reduce-overhead", "max-autotune"],
+                   help="CUDA torch.compile mode; the first epoch includes compilation. Use none to disable.")
     p.add_argument("--profile-cuda-timing", action="store_true")
     add_swanlab_args(p)
     return p
@@ -470,16 +271,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args       = build_arg_parser().parse_args()
-    model_type: ModelType = args.model_type   # type: ignore[assignment]
-    dataset_path = Path(args.dataset_output)
+    model_type: ModelType = args.model_type
+    dataset_path = Path(args.dataset_path)
 
-    if model_type == "cnn" and getattr(args, "use_pca", False):
+    if model_type == "cnn" and args.use_pca:
         raise ValueError("CNN does not support --use-pca; PCA-18 is an MLP-only feature path.")
 
-    # 1. device
     device = setup_device(args)
 
-    # 2. data
     transformed_bundle, feature_transform, saved_norm_path = load_and_transform_dataset(
         args, dataset_path=dataset_path,
     )
@@ -487,28 +286,35 @@ def main() -> None:
     if model_type == "cnn" and model_input_dim != 9:
         raise ValueError(
             f"CNN requires 9D features, got model input dim={model_input_dim}. "
-            "Use --model-type mlp for 27D (V2) or PCA-18 (V3) datasets."
+            "Use --model-type mlp for 15D (V6), 19D (V5), 11D (V4), 27D (V2), or PCA-18 (V3) datasets."
         )
 
-    # 3. config + seed
-    train_config = build_train_config_from_args(
-        args, raw_feature_dim=int(feature_transform["raw_feature_dim"]), model_type=model_type,
-        feature_transform=feature_transform,
+    overrides = {key: value for key, value in vars(args).items()
+                 if key != "model_type" and value is not None}
+    train_config = create_train_config(
+        model_type, **overrides,
+        input_dim=int(feature_transform["output_dim"]),
+        raw_feature_dim=int(feature_transform["raw_feature_dim"]),
     )
     torch.manual_seed(train_config.seed)
 
-    # 4. model
-    checkpoint_model = create_model(train_config).to(device)
+    if model_type == "mlp":
+        model = HKappaStencilNet(train_config).to(device)
+    else:
+        model = HKappaCNN(train_config).to(device)
+    checkpoint_model = model
+    checkpoint_path = train_config.output_model_path.resolve()
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
     amp_enabled      = device.type == "cuda" and not args.disable_amp
     compile_mode     = args.compile_mode if not args.disable_compile else "none"
-    compile_enabled  = device.type == "cuda" and not args.disable_compile and hasattr(torch, "compile")
+    compile_enabled = device.type == "cuda" and compile_mode != "none"
     model = (
         torch.compile(checkpoint_model, mode=compile_mode)
-        if compile_enabled and compile_mode != "none"
+        if compile_enabled
         else checkpoint_model
     )
 
-    # 5. TrainContext  (bundles all hardware/logging state)
+    # Optional phase log
     phase_log_path: Path | None = None
     if args.phase_log_path:
         phase_log_path = Path(args.phase_log_path).resolve()
@@ -516,25 +322,42 @@ def main() -> None:
         phase_log_path.write_text("", encoding="utf-8")
         emit_phase_event(phase_log_path, "run_initialized",
                          dataset_path=str(dataset_path.resolve()),
-                         output_model=str(Path(args.output_model).resolve()),
+                         output_model=str(Path(args.output_model_path).resolve()),
                          model_type=str(model_type))
-    ctx = TrainContext(
-        device=device,
-        amp_enabled=amp_enabled,
-        scaler=torch.amp.GradScaler("cuda", enabled=amp_enabled),
-        compile_enabled=compile_enabled,
-        compile_mode=compile_mode,
-        profile_cuda_timing=train_config.profile_cuda_timing,
-        phase_log_path=phase_log_path,
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+
+    train_split = transformed_bundle["splits"]["train"]
+    val_split = transformed_bundle["splits"]["val"]
+    train_dataset = TensorDataset(
+        torch.as_tensor(train_split["features"], dtype=torch.float32),
+        torch.as_tensor(train_split["hkappa_target"], dtype=torch.float32),
     )
+    val_dataset = TensorDataset(
+        torch.as_tensor(val_split["features"], dtype=torch.float32),
+        torch.as_tensor(val_split["hkappa_target"], dtype=torch.float32),
+    )
+    batch_size = train_config.batch_size
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # 6. loaders + loss
-    loaders = build_split_loaders(transformed_bundle, device=device, batch_size=train_config.batch_size)
-    loss_fn = create_loss_fn(train_config)
+    if train_config.loss_fn == "mse":
+        criterion = nn.MSELoss()
+    elif train_config.loss_fn == "mae":
+        criterion = nn.L1Loss()
+    else:
+        criterion = nn.HuberLoss()
 
-    # 7. print summary
+    lr = train_config.lr
+    l2_reg = train_config.l2_reg
+    if train_config.optimizer_type == "adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2_reg)
+    elif train_config.optimizer_type == "adamw":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=l2_reg)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=l2_reg, momentum=0.9)
+
     print(f"Dataset:    {dataset_path.resolve()}")
-    print(f"Model:      {model_type}  params={count_parameters(checkpoint_model)}")
+    print(f"Model:      {model_type}  params={parameter_count}")
     print(f"Device:     {device}  AMP={amp_enabled}  compile={compile_enabled}({compile_mode})")
     print(f"Optimizer:  {train_config.optimizer_type}  lr={train_config.lr}  wd={train_config.l2_reg}")
     print(f"Loss fn:    {train_config.loss_fn}")
@@ -542,18 +365,13 @@ def main() -> None:
     describe_dataset_bundle(transformed_bundle, batch_size=train_config.batch_size,
                             feature_transform=feature_transform)
 
-    # 8. compile warmup
-    emit_phase_event(ctx.phase_log_path, "data_ready",
+    emit_phase_event(phase_log_path, "data_ready",
                      device=str(device), train_size=int(transformed_bundle["sizes"]["train"]),
                      val_size=int(transformed_bundle["sizes"]["val"]),
                      test_size=int(transformed_bundle["sizes"].get("test", 0)),
                      batch_size=int(train_config.batch_size),
                      amp_enabled=bool(amp_enabled), compile_enabled=bool(compile_enabled))
-    if ctx.compile_enabled and ctx.compile_mode != "none":
-        maybe_warmup_compiled_training(model, loaders["train"],
-                                       train_config=train_config, ctx=ctx, loss_fn=loss_fn)
-
-    # 9. SwanLab  (optional)
+    # SwanLab  (optional)
     swanlab_run = None
     if args.use_swanlab:
         swanlab_run = init_swanlab_run(
@@ -567,25 +385,68 @@ def main() -> None:
             mode=args.swanlab_mode or None,
             config=build_swanlab_config(
                 train_config=train_config, bundle=transformed_bundle,
-                dataset_path=dataset_path, checkpoint_path=args.output_model,
+                dataset_path=dataset_path, checkpoint_path=args.output_model_path,
                 normalization_output=saved_norm_path, feature_transform=feature_transform,
-                device=device, parameter_count=count_parameters(checkpoint_model),
+                device=device, parameter_count=parameter_count,
                 model_type=model_type,
             ),
         )
 
-    # 10. train
-    emit_phase_event(ctx.phase_log_path, "training_begin")
-    _, history = train_model(
-        model,
-        loaders=loaders, train_config=train_config, model_type=model_type,
-        checkpoint_path=args.output_model, checkpoint_model=checkpoint_model,
-        feature_transform=feature_transform, ctx=ctx,
-        loss_fn=loss_fn, swanlab_run=swanlab_run,
-    )
-    emit_phase_event(ctx.phase_log_path, "training_end", best_epoch=int(history["best_epoch"]))
+    emit_phase_event(phase_log_path, "training_begin")
+    best_val   = float("inf")
+    best_state: dict[str, torch.Tensor] | None = None
+    best_epoch = -1
+    wait       = 0
+    history: dict[str, Any] = {
+        "train_hk": [], "val_hk": [], "best_epoch": -1,
+        "best_checkpoint_path": str(checkpoint_path.resolve()),
+    }
+    for epoch in range(train_config.max_epochs):
+        emit_phase_event(phase_log_path, "train_epoch_begin", epoch=epoch)
+        train_loss = train_loop(train_loader, model, criterion, optimizer, device, scaler)
+        if train_config.profile_cuda_timing and device.type == "cuda":
+            torch.cuda.synchronize(device)
+        emit_phase_event(phase_log_path, "train_epoch_end", epoch=epoch, sample_count=len(train_dataset))
 
-    # 11. finish
+        emit_phase_event(phase_log_path, "val_epoch_begin", epoch=epoch)
+        val_loss = val_loop(val_loader, model, criterion, device, amp_enabled)
+        if train_config.profile_cuda_timing and device.type == "cuda":
+            torch.cuda.synchronize(device)
+        emit_phase_event(phase_log_path, "val_epoch_end", epoch=epoch, sample_count=len(val_dataset))
+
+        history["train_hk"].append(train_loss)
+        history["val_hk"].append(val_loss)
+        print(f"Epoch {epoch:03d} | Train hk loss: {train_loss:.8e} | Val hk loss: {val_loss:.8e}")
+
+        if swanlab_run is not None:
+            swanlab_run.log({
+                "train/hk_loss":            train_loss,
+                "val/hk_loss":              val_loss,
+                "monitor/best_val_hk_loss": min(best_val, val_loss),
+            }, step=epoch + 1)
+
+        if val_loss < best_val:
+            best_val, best_epoch, wait = val_loss, epoch, 0
+            best_state = {k: v.detach().cpu().clone() for k, v in checkpoint_model.state_dict().items()}
+            save_checkpoint_bundle(checkpoint_model, model_type=model_type,
+                                   model_config=train_config, path=checkpoint_path,
+                                   feature_transform=feature_transform)
+            emit_phase_event(phase_log_path, "checkpoint_saved", epoch=int(epoch),
+                             checkpoint_path=str(checkpoint_path.resolve()), kind="best_so_far")
+        else:
+            wait += 1
+            if wait >= train_config.patience:
+                print(f"Early stopping at epoch {epoch} with patience={train_config.patience}.")
+                emit_phase_event(phase_log_path, "early_stopping",
+                                 epoch=int(epoch), patience=int(train_config.patience))
+                break
+
+    if best_state is not None:
+        checkpoint_model.load_state_dict(best_state)
+
+    history["best_epoch"] = best_epoch
+    emit_phase_event(phase_log_path, "training_end", best_epoch=int(history["best_epoch"]))
+
     if swanlab_run is not None:
         swanlab_run.log({
             "summary/best_epoch":        int(history["best_epoch"]),
@@ -593,7 +454,7 @@ def main() -> None:
             "summary/final_val_hk_loss": float(history["val_hk"][-1]),
         })
         swanlab_run.finish()
-    emit_phase_event(ctx.phase_log_path, "run_complete", best_epoch=int(history["best_epoch"]))
+    emit_phase_event(phase_log_path, "run_complete", best_epoch=int(history["best_epoch"]))
     print(f"Best epoch: {history['best_epoch']}")
     print(f"Best checkpoint: {Path(history['best_checkpoint_path']).resolve()}")
 

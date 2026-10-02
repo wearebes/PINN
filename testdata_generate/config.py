@@ -122,6 +122,14 @@ class TestDataConfig:
     requested_rho_model: int | None = None
     scale_h: bool = False
     augment_gradient: bool = False
+    # None preserves the legacy augment_gradient switch; explicit mode takes precedence.
+    feature_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        from train_generate.features import resolve_feature_mode
+
+        mode = resolve_feature_mode(self.feature_mode, self.augment_gradient)
+        object.__setattr__(self, "augment_gradient", mode != "phi9")
 
     def output_path(self) -> Path:
         dataset_name = self.dataset_name

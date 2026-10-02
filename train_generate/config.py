@@ -28,6 +28,9 @@ class DataConfig:
     initial_field_types: tuple[str, ...] = ("sdf", "nonsdf")
     augment_sign_flip: bool = True
     augment_gradient: bool = False
+    # None preserves the legacy augment_gradient switch; explicit mode takes precedence.
+    feature_mode: str | None = None
+    grid_convention: str = "endpoint_nodes"
     train_fraction: float = 0.70
     val_fraction: float = 0.15
     shape_types: tuple[str, ...] = ("circle", "ellipse")
@@ -46,6 +49,14 @@ class DataConfig:
     # Training-only augmentation factors for pairs (phi/(alpha*h), alpha*h*kappa).
     # Deployment-time input contract remains phi/h (alpha=1.0).
     augment_scale_alpha: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        from train_generate.features import resolve_feature_mode
+
+        if self.grid_convention not in ("endpoint_nodes", "cell_count_cell_centres"):
+            raise ValueError(f"Unknown grid_convention {self.grid_convention!r}")
+        mode = resolve_feature_mode(self.feature_mode, self.augment_gradient)
+        object.__setattr__(self, "augment_gradient", mode != "phi9")
 
 
 @dataclass(frozen=True)

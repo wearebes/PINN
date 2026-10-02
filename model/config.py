@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal, Union
@@ -69,12 +68,6 @@ __all__ = [
 ]
 
 
-def _get_field_default(f: dataclasses.Field) -> Any:
-    if f.default_factory is not dataclasses.MISSING:
-        return f.default_factory()
-    return f.default
-
-
 def _config_class_for_model_type(model_type: ModelType) -> type[MLP_TrainConfig] | type[CNN_TrainConfig]:
     if model_type == "mlp":
         return MLP_TrainConfig
@@ -97,7 +90,5 @@ def filter_train_config_overrides(model_type: ModelType, overrides: dict[str, An
 
 def create_train_config(model_type: ModelType, **overrides) -> TrainConfig:
     config_cls = _config_class_for_model_type(model_type)
-    defaults = {f.name: _get_field_default(f) for f in fields(config_cls)}
-    filtered_overrides, _ = filter_train_config_overrides(model_type, dict(overrides))
-    defaults.update(filtered_overrides)
-    return config_cls(**defaults)
+    filtered_overrides, _ = filter_train_config_overrides(model_type, overrides)
+    return config_cls(**filtered_overrides)

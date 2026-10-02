@@ -1,11 +1,11 @@
 from __future__ import annotations
-from typing import Any, Callable
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
-from .config import CNN_TrainConfig, LossFnType, MLP_TrainConfig, OptimizerType, TrainConfig
+from .config import CNN_TrainConfig, MLP_TrainConfig, TrainConfig
+
+
 class HKappaStencilNet(nn.Module):
     def __init__(self, config: MLP_TrainConfig) -> None:
         super().__init__()
@@ -24,6 +24,7 @@ class HKappaStencilNet(nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features)
 
+
 class HKappaCNN(nn.Module):
     def __init__(self, config: CNN_TrainConfig) -> None:
         super().__init__()
@@ -38,31 +39,10 @@ class HKappaCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim == 2:
+            x = x.reshape(-1, 1, 3, 3)
         return self.net(x)
 
-class Resblock(nn.Module):
-    def __init__(self,hidden_units: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(hidden_units,hidden_units),
-            nn.ReLU(),
-        )
-    def forward (self, x:torch.Tensor) -> torch.Tensor:
-        return self.net(x)+ x
-        
-class ErrorResMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_units: int, output_dim: int) -> None:
-        super().__init__()
-        self.net= nn.Sequential(
-            nn.Linear( input_dim, hidden_units),
-            nn.ReLU(),
-            Resblock(hidden_units),
-            Resblock(hidden_units),
-            Resblock(hidden_units),
-            nn.Linear(hidden_units, output_dim),
-        )
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 def create_model(config: TrainConfig) -> nn.Module:
     if isinstance(config, MLP_TrainConfig):
@@ -70,37 +50,3 @@ def create_model(config: TrainConfig) -> nn.Module:
     if isinstance(config, CNN_TrainConfig):
         return HKappaCNN(config)
     raise TypeError(f"Unsupported config type: {type(config).__name__}")
-
-
-def count_parameters(model: nn.Module) -> int:
-    return sum(parameter.numel() for parameter in model.parameters())
-
-# --------------------------------------------------------------------------
-# Training-adjacent factories  (depend only on config, live here so that
-# train.py has a single import point for everything model-related)
-# ---------------------------------------------------------------------------
-
-def create_loss_fn(train_config: TrainConfig) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-    """Return the loss callable specified by config.loss_fn."""
-    mapping: dict[LossFnType, Callable] = {
-        "mse":   F.mse_loss,
-        "mae":   F.l1_loss,
-        "huber": F.huber_loss,
-    }
-    key: LossFnType = train_config.loss_fn  # type: ignore[assignment]
-    if key not in mapping:
-        raise ValueError(f"Unknown loss_fn {key!r}. Expected one of {list(mapping)}.")
-    return mapping[key]
-
-
-def create_optimizer(model: nn.Module, train_config: TrainConfig) -> torch.optim.Optimizer:
-    """Create an optimizer from config.optimizer_type, lr, and l2_reg."""
-    key: OptimizerType = train_config.optimizer_type  # type: ignore[assignment]
-    lr, wd = train_config.lr, train_config.l2_reg
-    if key == "adamw":
-        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-    if key == "adam":
-        return torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    if key == "sgd":
-        return torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd, momentum=0.9)
-    raise ValueError(f"Unknown optimizer_type {key!r}. Expected one of ['adamw', 'adam', 'sgd'].")

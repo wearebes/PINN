@@ -1,6 +1,5 @@
 dataset/
 test_data/
-pinn.html
 .codex
 __pycache__/
 logs/
@@ -12,9 +11,6 @@ DS_Store
 .DS_Store
 AGENTS.md
 docs/
-cfd_static_bubble/
-twophaseflow_nn_gate/
-basilisk_reference_gate/
 .qcc*/
 slurm-*.out
 slurm-*.err
@@ -22,24 +18,5 @@ tmp/
 swanlogs/
 screenlog.0
 tem/
-
-# large experiment outputs & build artifacts — kept on disk, not tracked by git
-cfd_applications_cleanroom/build/
-cfd_applications_cleanroom/vendor/basilisk_clean/
-cfd_applications_cleanroom/results/raw/
-cfd_applications_cleanroom/results/source_data/
-cfd_applications_cleanroom/results/background/
-cfd_applications_cleanroom/results/tmp/
-cfd_applications_cleanroom/results/transfer/
-tem/**/run_*/
-tem/kappa_const_oracle/oracle_*_L6
-
-# summary.csv accumulates raw per-run traces and can grow to GB scale;
-# keep it on disk for plotting but stop tracking its size in git
-Experiment/report/stationary bubble/summary.csv
-
-# sole-archive plot-source CSVs (93-206 MB gz; the ellipse one exceeds
-# GitHub's 100 MB hard limit). The *_summary.md next to them is tracked
-# and records each archive's sha256; back the .csv.gz up outside git.
-Experiment/report/stationary bubble/stationary_bubble_source.csv.gz
-Experiment/report/stationary bubble/stationary_ellipse_source.csv.gz
+.claude
+.vscode

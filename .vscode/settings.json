@@ -6,5 +6,9 @@
         "**/out/**": true,
         "**/test_data/**": true,
         "**/*.h5": true
+    },
+    "files.associations": {
+        "*.c": "c",
+        "*.h": "c"
     }
 }

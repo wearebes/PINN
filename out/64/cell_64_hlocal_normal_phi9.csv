@@ -1,0 +1,16 @@
+phi_index,mean,std,variance,source_split,feature_count,dataset_path
+1,0.0,7.3380889892578125,53.84754943847656,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+2,0.0,5.719132423400879,32.70847702026367,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+3,0.0,7.328895568847656,53.712711334228516,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+4,0.0,5.687579154968262,32.34855651855469,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+5,0.0,3.3943698406219482,11.521746635437012,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+6,0.0,5.694732666015625,32.42998123168945,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+7,0.0,7.328516483306885,53.7071533203125,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+8,0.0,5.726063251495361,32.78779983520508,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+9,0.0,7.349508762359619,54.01527786254883,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+10,0.0,0.7062906622886658,0.49884650111198425,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+11,0.0,0.7079219222068787,0.5011534690856934,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+12,0.0,0.7078324556350708,0.5010268092155457,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+13,0.0,0.7078321576118469,0.5010263919830322,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+14,0.0,0.7062000632286072,0.4987185299396515,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
+15,0.0,0.7061995267868042,0.4987177848815918,train,15,/Users/jcy/research/PINN/dataset/64/64_cellcenter_hlocal_normal.h5
